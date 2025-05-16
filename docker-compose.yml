@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # USER SERVICE + DATABASE
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    ports:
+      - "3000:3000"
+    depends_on:
+      - user-mysql
+    environment:
+      DB_HOST: user-mysql
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: user_service_db
+      PORT: 3000
+    volumes:
+      - ./user-service:/app
+    restart: unless-stopped
+    networks:
+      - soa-net
+
+  user-mysql:
+    image: mysql:8.0
+    container_name: user-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3307:3306"
+    volumes:
+      - user_mysql_data:/var/lib/mysql
+      - ./user-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - soa-net
+
+  # ANALYTICS SERVICE + DATABASE
+  analytics-service:
+    build: ./analytics-service
+    container_name: analytics-service
+    ports:
+      - "8000:8000"
+    depends_on:
+      - analytics-mysql
+    environment:
+      DB_HOST: analytics-mysql
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: reservation_service_db
+    volumes:
+      - ./analytics-service/app:/app/app
+    networks:
+      - soa-net
+
+  analytics-mysql:
+    image: mysql:8.0
+    container_name: analytics-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3308:3306"
+    volumes:
+      - analytics_mysql_data:/var/lib/mysql
+      - ./analytics-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - soa-net
+
+volumes:
+  user_mysql_data:
+  analytics_mysql_data:
+
+networks:
+  soa-net:
