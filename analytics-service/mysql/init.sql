@@ -1,76 +1,61 @@
 CREATE DATABASE IF NOT EXISTS reservation_service_db;
 USE reservation_service_db;
 
-CREATE TABLE IF NOT EXISTS time (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    year VARCHAR(4),
-    month VARCHAR(2),
-    week VARCHAR(2),
-    quarter VARCHAR(2),
-    day_in_month VARCHAR(2),
-    day_in_week VARCHAR(2),
-    hour VARCHAR(2)
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS employee (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    first_name VARCHAR(45),
-    last_name VARCHAR(45),
-    position VARCHAR(45),
-    employee_code VARCHAR(45),
-    emso VARCHAR(45)
+CREATE TABLE IF NOT EXISTS employees (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    role VARCHAR(100) NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS location (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(45),
-    country VARCHAR(45)
+CREATE TABLE IF NOT EXISTS locations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    address VARCHAR(255) NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS service (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(45),
-    price DECIMAL(10,2),
-    valid_until DATE,
-    service_code VARCHAR(45)
+CREATE TABLE IF NOT EXISTS services (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    price DECIMAL(10,2) NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS payment (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(45),
-    description VARCHAR(255)
+CREATE TABLE IF NOT EXISTS time_dim (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    date DATE NOT NULL,
+    hour INT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS cancellation (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(45),
-    description VARCHAR(255)
+CREATE TABLE IF NOT EXISTS reservations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    employee_id INT NOT NULL,
+    service_id INT NOT NULL,
+    location_id INT NOT NULL,
+    time_id INT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (employee_id) REFERENCES employees(id),
+    FOREIGN KEY (service_id) REFERENCES services(id),
+    FOREIGN KEY (location_id) REFERENCES locations(id),
+    FOREIGN KEY (time_id) REFERENCES time_dim(id)
 );
 
-CREATE TABLE IF NOT EXISTS user (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    first_name VARCHAR(45),
-    last_name VARCHAR(45),
-    email VARCHAR(45),
-    points INT
+CREATE TABLE IF NOT EXISTS payments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    reservation_id INT NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    method VARCHAR(50),
+    FOREIGN KEY (reservation_id) REFERENCES reservations(id)
 );
 
-CREATE TABLE IF NOT EXISTS reservation (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    payment_id INT,
-    cancellation_id INT,
-    time_id INT,
-    user_id INT,
-    employee_id INT,
-    location_id INT,
-    service_id INT,
-    company_id INT,
-    sms_sent BOOLEAN DEFAULT FALSE,
-    FOREIGN KEY (payment_id) REFERENCES payment(id),
-    FOREIGN KEY (cancellation_id) REFERENCES cancellation(id),
-    FOREIGN KEY (time_id) REFERENCES time(id),
-    FOREIGN KEY (user_id) REFERENCES user(id),
-    FOREIGN KEY (employee_id) REFERENCES employee(id),
-    FOREIGN KEY (location_id) REFERENCES location(id),
-    FOREIGN KEY (service_id) REFERENCES service(id)
+CREATE TABLE IF NOT EXISTS cancellations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    reservation_id INT NOT NULL,
+    reason VARCHAR(255),
+    FOREIGN KEY (reservation_id) REFERENCES reservations(id)
 );

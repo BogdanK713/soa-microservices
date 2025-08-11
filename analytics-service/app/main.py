@@ -1,18 +1,46 @@
 from fastapi import FastAPI
-from app.routes import reservation, user, employee, location, service, time, payment, cancellation, analytics
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(
-    title="Analytics (Reservation) Service",
-    description="FastAPI service for analytics with full CRUD support",
-    version="1.0.0"
+# singular file names in routes package
+from app.routes import (
+    health,
+    user,
+    employee,
+    location,
+    service,
+    time,
+    reservation,
+    payment,
+    cancellation,
+    analytics,
 )
 
-app.include_router(reservation.router, prefix="/reservations")
-app.include_router(user.router, prefix="/users")
-app.include_router(employee.router, prefix="/employees")
-app.include_router(location.router, prefix="/locations")
-app.include_router(service.router, prefix="/services")
-app.include_router(time.router, prefix="/times")
-app.include_router(payment.router, prefix="/payments")
-app.include_router(cancellation.router, prefix="/cancellations")
-app.include_router(analytics.router, prefix="/analytics")
+app = FastAPI(
+    title="Analytics Service",
+    version="1.0.0",
+    description="Analytics & CRUD service with documented routes",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# register routers
+app.include_router(health.router)
+app.include_router(user.router)
+app.include_router(employee.router)
+app.include_router(location.router)
+app.include_router(service.router)
+app.include_router(time.router)
+app.include_router(reservation.router)
+app.include_router(payment.router)
+app.include_router(cancellation.router)
+app.include_router(analytics.router)
+
+@app.get("/")
+def root():
+    return {"service": "analytics", "status": "ok"}

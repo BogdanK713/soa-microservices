@@ -1,294 +1,528 @@
-openapi: 3.0.0
+openapi: 3.0.3
 info:
   title: User Service API
   version: 1.0.0
-  description: REST API for managing users, locations, favorites, and reservations.
+  description: |
+    REST API za korisnike, lokacije, favorite kompanije i rezervacije.
+    Svi primjeri i status kodovi su uključeni. Autentikaciju trenutno ignorišemo.
 
 servers:
   - url: http://localhost:3000/api
+    description: Localhost
+
+  - url: http://user-service:3000/api
+    description: Docker network
+
+
+tags:
+  - name: health
+    description: Health check
+  - name: users
+    description: Upravljanje korisnicima
+  - name: locations
+    description: Upravljanje lokacijama
+  - name: favorites
+    description: Favorite kompanije korisnika
+  - name: reservations
+    description: Upravljanje rezervacijama
 
 paths:
-  /users:
+  /health:
     get:
-      summary: Get all users
+      tags: [health]
+      summary: Health check
       responses:
         '200':
-          description: A list of users
+          description: Servis je živ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              examples:
+                ok:
+                  value: { status: "ok" }
+
+  /users:
+    get:
+      tags: [users]
+      summary: Lista korisnika
+      responses:
+        '200':
+          description: OK
           content:
             application/json:
               schema:
                 type: array
-                items:
-                  $ref: '#/components/schemas/User'
+                items: { $ref: '#/components/schemas/User' }
+              examples:
+                sample:
+                  value:
+                    - { id: 1, name: "Ana", email: "ana@example.com" }
+                    - { id: 2, name: "Marko", email: "marko@example.com" }
+        '500': { $ref: '#/components/responses/ServerError' }
+
     post:
-      summary: Create a new user
+      tags: [users]
+      summary: Kreiraj korisnika
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/UserInput'
+            schema: { $ref: '#/components/schemas/UserCreate' }
+            examples:
+              sample:
+                value: { name: "Ana", email: "ana@example.com" }
       responses:
         '201':
-          description: User created
-        '400':
-          description: Invalid input
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+              examples:
+                sample:
+                  value: { id: 10, name: "Ana", email: "ana@example.com" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /users/{id}:
     get:
-      summary: Get a user by ID
+      tags: [users]
+      summary: Dohvati korisnika po ID-u
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/Id'
       responses:
         '200':
-          description: Found user
+          description: OK
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/User'
-        '404':
-          description: User not found
+              schema: { $ref: '#/components/schemas/User' }
+              examples:
+                sample:
+                  value: { id: 1, name: "Ana", email: "ana@example.com" }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
     put:
-      summary: Update a user
+      tags: [users]
+      summary: Ažuriraj korisnika
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/Id'
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/UserInput'
+            schema: { $ref: '#/components/schemas/UserUpdate' }
+            examples:
+              sample:
+                value: { name: "Ana Ažurirana", email: "ana.new@example.com" }
       responses:
         '200':
-          description: User updated
-        '400':
-          description: Invalid data
-        '404':
-          description: User not found
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+              examples:
+                sample:
+                  value: { id: 1, name: "Ana Ažurirana", email: "ana.new@example.com" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
     delete:
-      summary: Delete a user
+      tags: [users]
+      summary: Obriši korisnika
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/Id'
       responses:
-        '200':
-          description: User deleted
-        '404':
-          description: User not found
+        '204':
+          description: Obrisano (bez tijela)
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /locations:
     get:
-      summary: Get all locations
+      tags: [locations]
+      summary: Lista lokacija
       responses:
         '200':
-          description: A list of locations
+          description: OK
           content:
             application/json:
               schema:
                 type: array
-                items:
-                  $ref: '#/components/schemas/Location'
+                items: { $ref: '#/components/schemas/Location' }
+              examples:
+                sample:
+                  value:
+                    - { id: 1, name: "Center", address: "Glavna 1" }
+                    - { id: 2, name: "Novi Grad", address: "Sporedna 5" }
+        '500': { $ref: '#/components/responses/ServerError' }
+
     post:
-      summary: Create a location
+      tags: [locations]
+      summary: Kreiraj lokaciju
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/LocationInput'
+            schema: { $ref: '#/components/schemas/LocationCreate' }
+            examples:
+              sample:
+                value: { name: "Center", address: "Glavna 1" }
       responses:
         '201':
-          description: Location created
-        '400':
-          description: Invalid input
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Location' }
+              examples:
+                sample:
+                  value: { id: 3, name: "Center", address: "Glavna 1" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
-  /favorites/user/{userId}:
+  /locations/{id}:
     get:
-      summary: Get favorite companies for a user
+      tags: [locations]
+      summary: Dohvati lokaciju
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Location' }
+              examples:
+                sample:
+                  value: { id: 1, name: "Center", address: "Glavna 1" }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+    put:
+      tags: [locations]
+      summary: Ažuriraj lokaciju
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocationUpdate' }
+            examples:
+              sample:
+                value: { name: "Center 2", address: "Glavna 1A" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Location' }
+              examples:
+                sample:
+                  value: { id: 1, name: "Center 2", address: "Glavna 1A" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+    delete:
+      tags: [locations]
+      summary: Obriši lokaciju
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /favorites/{userId}:
+    get:
+      tags: [favorites]
+      summary: Lista favorita za korisnika
       parameters:
         - name: userId
           in: path
           required: true
-          schema:
-            type: integer
+          schema: { type: integer }
       responses:
         '200':
-          description: List of favorite companies
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Favorite' }
+              examples:
+                sample:
+                  value:
+                    - { id: 1, user_id: 5, company_name: "ACME d.o.o." }
+                    - { id: 2, user_id: 5, company_name: "Globex" }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /favorites:
     post:
-      summary: Add favorite company
+      tags: [favorites]
+      summary: Dodaj u favorite
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                user_id:
-                  type: integer
+            schema: { $ref: '#/components/schemas/FavoriteCreate' }
+            examples:
+              sample:
+                value: { user_id: 5, company_name: "ACME d.o.o." }
       responses:
         '201':
-          description: Favorite added
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Favorite' }
+              examples:
+                sample:
+                  value: { id: 10, user_id: 5, company_name: "ACME d.o.o." }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
-  /favorites/{id}:
     delete:
-      summary: Remove favorite
+      tags: [favorites]
+      summary: Ukloni iz favorita
       parameters:
-        - name: id
-          in: path
+        - name: userId
+          in: query
           required: true
-          schema:
-            type: integer
+          schema: { type: integer }
+        - name: favoriteId
+          in: query
+          required: true
+          schema: { type: integer }
       responses:
-        '200':
-          description: Favorite deleted
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /reservations:
     get:
-      summary: Get all reservations
+      tags: [reservations]
+      summary: Lista rezervacija
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, example: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, example: 0 }
       responses:
         '200':
-          description: A list of reservations
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Reservation' }
+              examples:
+                sample:
+                  value:
+                    - { id: 1, user_id: 5, service_id: 2, date: "2025-05-15" }
+        '500': { $ref: '#/components/responses/ServerError' }
 
     post:
-      summary: Create a new reservation
+      tags: [reservations]
+      summary: Kreiraj rezervaciju
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ReservationInput'
+            schema: { $ref: '#/components/schemas/ReservationCreate' }
+            examples:
+              sample:
+                value: { user_id: 5, service_id: 2, date: "2025-05-15" }
       responses:
         '201':
-          description: Reservation created
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+              examples:
+                sample:
+                  value: { id: 21, user_id: 5, service_id: 2, date: "2025-05-15" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /reservations/{id}:
     get:
-      summary: Get reservation by ID
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      tags: [reservations]
+      summary: Dohvati rezervaciju
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
       responses:
         '200':
-          description: Found reservation
-        '404':
-          description: Reservation not found
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+              examples:
+                sample:
+                  value: { id: 1, user_id: 5, service_id: 2, date: "2025-05-15" }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
     put:
-      summary: Update a reservation
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      tags: [reservations]
+      summary: Ažuriraj rezervaciju
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ReservationInput'
+            schema: { $ref: '#/components/schemas/ReservationUpdate' }
+            examples:
+              sample:
+                value: { user_id: 5, service_id: 3, date: "2025-05-20" }
       responses:
         '200':
-          description: Reservation updated
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+              examples:
+                sample:
+                  value: { id: 1, user_id: 5, service_id: 3, date: "2025-05-20" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
     delete:
-      summary: Delete a reservation
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      tags: [reservations]
+      summary: Obriši rezervaciju
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
       responses:
-        '200':
-          description: Reservation deleted
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
 components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+      description: Primarni ključ zapisa
+
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            sample:
+              value: { error: "Validation failed" }
+
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            sample:
+              value: { error: "Resource not found" }
+
+    ServerError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            sample:
+              value: { error: "Unexpected server error" }
+
   schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    # Users
     User:
       type: object
       properties:
-        id:
-          type: integer
-        first_name:
-          type: string
-        last_name:
-          type: string
-        email:
-          type: string
-        oauth_id:
-          type: string
-        location_id:
-          type: integer
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+      required: [id, name, email]
 
-    UserInput:
+    UserCreate:
       type: object
-      required:
-        - first_name
-        - last_name
-        - email
-        - location_id
       properties:
-        first_name:
-          type: string
-        last_name:
-          type: string
-        email:
-          type: string
-        oauth_id:
-          type: string
-        location_id:
-          type: integer
+        name: { type: string }
+        email: { type: string, format: email }
+      required: [name, email]
 
+    UserUpdate:
+      allOf:
+        - $ref: '#/components/schemas/UserCreate'
+
+    # Locations
     Location:
       type: object
       properties:
-        id:
-          type: integer
-        postal_code:
-          type: string
-        city:
-          type: string
-        country:
-          type: string
+        id: { type: integer }
+        name: { type: string }
+        address: { type: string }
+      required: [id, name]
 
-    LocationInput:
+    LocationCreate:
       type: object
-      required:
-        - postal_code
-        - city
-        - country
       properties:
-        postal_code:
-          type: string
-        city:
-          type: string
-        country:
-          type: string
+        name: { type: string }
+        address: { type: string }
+      required: [name]
 
-    ReservationInput:
+    LocationUpdate:
+      allOf:
+        - $ref: '#/components/schemas/LocationCreate'
+
+    # Favorites
+    Favorite:
       type: object
-      required:
-        - reservation_code
-        - user_id
       properties:
-        reservation_code:
-          type: string
-        user_id:
-          type: integer
+        id: { type: integer }
+        user_id: { type: integer }
+        company_name: { type: string }
+      required: [id, user_id, company_name]
+
+    FavoriteCreate:
+      type: object
+      properties:
+        user_id: { type: integer }
+        company_name: { type: string }
+      required: [user_id, company_name]
+
+    # Reservations
+    Reservation:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        service_id: { type: integer }
+        date: { type: string, format: date }
+      required: [id, user_id, service_id, date]
+
+    ReservationCreate:
+      type: object
+      properties:
+        user_id: { type: integer }
+        service_id: { type: integer }
+        date: { type: string, format: date }
+      required: [user_id, service_id, date]
+
+    ReservationUpdate:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCreate'

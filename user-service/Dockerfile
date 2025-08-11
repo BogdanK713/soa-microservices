@@ -1,16 +1,30 @@
-# Use lightweight Node image
-FROM node:18-alpine
+# --- build stage (samo ako radiš transpile/ts – inače se preskače) ---
+# FROM node:18-alpine AS build
+# WORKDIR /app
+# COPY package*.json ./
+# RUN npm ci --only=production
+# COPY . .
+# # ako koristiš TypeScript: RUN npm run build
 
-# Set working directory
+# --- runtime stage ---
+FROM node:18-alpine
 WORKDIR /app
 
-# Copy package files and install dependencies
+# Manje slojeva i keširanje: prvo samo deps
 COPY package*.json ./
-RUN npm install
+RUN npm ci --only=production --no-audit --no-fund
 
-# Copy source code
+# Kopiraj ostatak koda
 COPY . .
 
-# Expose port and run app
+# Bez cache-a i nepotrebnih paketa u alpine
+RUN apk add --no-cache tini
+
+ENV NODE_ENV=production \
+    PORT=3000
+
 EXPOSE 3000
-CMD ["node", "src/index.js"]
+
+# Ako imaš start scriptu u package.json -> "start": "node src/index.js"
+ENTRYPOINT ["/sbin/tini","--"]
+CMD ["npm","start"]

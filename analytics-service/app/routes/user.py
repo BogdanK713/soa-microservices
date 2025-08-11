@@ -1,57 +1,58 @@
-from fastapi import APIRouter, HTTPException
-from app.db import get_connection
+from fastapi import APIRouter, HTTPException, status
+from app.db import get_db_connection
+from app.models import UserIn, UserOut
 
-router = APIRouter()
+router = APIRouter(prefix="/users", tags=["users"])
 
-@router.get("/")
-def get_all():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM user")
-    results = cursor.fetchall()
-    conn.close()
-    return results
+@router.get("/", response_model=list[UserOut])
+def list_users():
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, name, email FROM users")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return rows
 
-@router.get("/{item_id}")
-def get_one(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM user WHERE id = %s", (item_id,))
-    item = cursor.fetchone()
-    conn.close()
-    if not item:
+@router.get("/{user_id}", response_model=UserOut, responses={404: {"description": "Not found"}})
+def get_user(user_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, name, email FROM users WHERE id=%s", (user_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
         raise HTTPException(status_code=404, detail="User not found")
-    return item
+    return row
 
-@router.post("/")
-def create(data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO user (first_name, last_name, email, points) VALUES (%s, %s, %s, %s)",
-        (data['first_name'], data['last_name'], data['email'], data['points'])
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "User created"}
+@router.post("/", response_model=UserOut, status_code=status.HTTP_201_CREATED,
+             responses={400: {"description": "Bad request"}})
+def create_user(payload: UserIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("INSERT INTO users (name, email) VALUES (%s, %s)", (payload.name, payload.email))
+        conn.commit(); new_id = cur.lastrowid
+    except Exception as e:
+        conn.rollback(); raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close(); conn.close()
+    return UserOut(id=new_id, **payload.dict())
 
-@router.put("/{item_id}")
-def update(item_id: int, data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE user SET first_name = %s, last_name = %s, email = %s, points = %s WHERE id = %s",
-        (data['first_name'], data['last_name'], data['email'], data['points'], item_id)
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "User updated"}
+@router.put("/{user_id}", response_model=UserOut, responses={404: {"description": "Not found"}})
+def update_user(user_id: int, payload: UserIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    cur.execute("UPDATE users SET name=%s, email=%s WHERE id=%s", (payload.name, payload.email, user_id))
+    conn.commit(); cur.close(); conn.close()
+    return UserOut(id=user_id, **payload.dict())
 
-@router.delete("/{item_id}")
-def delete(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM user WHERE id = %s", (item_id,))
-    conn.commit()
-    conn.close()
-    return {"message": "User deleted"}
+@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT, responses={404: {"description": "Not found"}})
+def delete_user(user_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+    conn.commit(); cur.close(); conn.close()
+    return None

@@ -1,57 +1,60 @@
-from fastapi import APIRouter, HTTPException
-from app.db import get_connection
+from fastapi import APIRouter, HTTPException, status
+from app.db import get_db_connection
+from app.models import TimeDimIn, TimeDimOut
 
-router = APIRouter()
+router = APIRouter(prefix="/time", tags=["time"])
 
-@router.get("/")
-def get_all():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM time")
-    results = cursor.fetchall()
-    conn.close()
-    return results
+@router.get("/", response_model=list[TimeDimOut])
+def list_time_dim():
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, date, year, month, day FROM time_dim")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return rows
 
-@router.get("/{item_id}")
-def get_one(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM time WHERE id = %s", (item_id,))
-    item = cursor.fetchone()
-    conn.close()
-    if not item:
-        raise HTTPException(status_code=404, detail="Time entry not found")
-    return item
+@router.get("/{time_id}", response_model=TimeDimOut, responses={404: {"description": "Not found"}})
+def get_time_dim(time_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, date, year, month, day FROM time_dim WHERE id=%s", (time_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="TimeDim not found")
+    return row
 
-@router.post("/")
-def create(data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO time (year, month, week, quarter, day_in_month, day_in_week, hour) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (data['year'], data['month'], data['week'], data['quarter'], data['day_in_month'], data['day_in_week'], data['hour'])
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "Time entry created"}
+@router.post("/", response_model=TimeDimOut, status_code=status.HTTP_201_CREATED,
+             responses={400: {"description": "Bad request"}})
+def create_time_dim(payload: TimeDimIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("INSERT INTO time_dim (date, year, month, day) VALUES (%s, %s, %s, %s)",
+                    (payload.date, payload.year, payload.month, payload.day))
+        conn.commit(); new_id = cur.lastrowid
+    except Exception as e:
+        conn.rollback(); raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close(); conn.close()
+    return TimeDimOut(id=new_id, **payload.dict())
 
-@router.put("/{item_id}")
-def update(item_id: int, data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE time SET year = %s, month = %s, week = %s, quarter = %s, day_in_month = %s, day_in_week = %s, hour = %s WHERE id = %s",
-        (data['year'], data['month'], data['week'], data['quarter'], data['day_in_month'], data['day_in_week'], data['hour'], item_id)
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "Time entry updated"}
+@router.put("/{time_id}", response_model=TimeDimOut, responses={404: {"description": "Not found"}})
+def update_time_dim(time_id: int, payload: TimeDimIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM time_dim WHERE id=%s", (time_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="TimeDim not found")
+    cur.execute("UPDATE time_dim SET date=%s, year=%s, month=%s, day=%s WHERE id=%s",
+                (payload.date, payload.year, payload.month, payload.day, time_id))
+    conn.commit(); cur.close(); conn.close()
+    return TimeDimOut(id=time_id, **payload.dict())
 
-@router.delete("/{item_id}")
-def delete(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM time WHERE id = %s", (item_id,))
-    conn.commit()
-    conn.close()
-    return {"message": "Time entry deleted"}
+@router.delete("/{time_id}", status_code=status.HTTP_204_NO_CONTENT, responses={404: {"description": "Not found"}})
+def delete_time_dim(time_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM time_dim WHERE id=%s", (time_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="TimeDim not found")
+    cur.execute("DELETE FROM time_dim WHERE id=%s", (time_id,))
+    conn.commit(); cur.close(); conn.close()
+    return None

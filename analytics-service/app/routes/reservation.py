@@ -1,76 +1,64 @@
-from fastapi import APIRouter, HTTPException
-from app.db import get_connection
+from fastapi import APIRouter, HTTPException, status
+from app.db import get_db_connection
+from app.models import ReservationIn, ReservationOut
 
-router = APIRouter()
+router = APIRouter(prefix="/reservations", tags=["reservations"])
 
-@router.get("/")
-def get_all():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM reservation")
-    results = cursor.fetchall()
-    conn.close()
-    return results
+@router.get("/", response_model=list[ReservationOut])
+def list_reservations():
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, user_id, service_id, location_id, date FROM reservations")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return rows
 
-@router.get("/{item_id}")
-def get_one(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM reservation WHERE id = %s", (item_id,))
-    item = cursor.fetchone()
-    conn.close()
-    if not item:
+@router.get("/{reservation_id}", response_model=ReservationOut, responses={404: {"description": "Not found"}})
+def get_reservation(reservation_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, user_id, service_id, location_id, date FROM reservations WHERE id=%s", (reservation_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
         raise HTTPException(status_code=404, detail="Reservation not found")
-    return item
+    return row
 
-@router.post("/")
-def create(data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO reservation (
-            payment_id, cancellation_id, time_id, user_id, employee_id,
-            location_id, service_id, company_id, sms_sent
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            data['payment_id'], data['cancellation_id'], data['time_id'], data['user_id'],
-            data['employee_id'], data['location_id'], data['service_id'],
-            data['company_id'], data['sms_sent']
+@router.post("/", response_model=ReservationOut, status_code=status.HTTP_201_CREATED,
+             responses={400: {"description": "Bad request"}})
+def create_reservation(payload: ReservationIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "INSERT INTO reservations (user_id, service_id, location_id, date) VALUES (%s, %s, %s, %s)",
+            (payload.user_id, payload.service_id, payload.location_id, payload.date)
         )
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "Reservation created"}
+        conn.commit(); new_id = cur.lastrowid
+    except Exception as e:
+        conn.rollback(); raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close(); conn.close()
+    return ReservationOut(id=new_id, **payload.dict())
 
-@router.put("/{item_id}")
-def update(item_id: int, data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        UPDATE reservation SET
-            payment_id = %s, cancellation_id = %s, time_id = %s, user_id = %s,
-            employee_id = %s, location_id = %s, service_id = %s, company_id = %s,
-            sms_sent = %s
-        WHERE id = %s
-        """,
-        (
-            data['payment_id'], data['cancellation_id'], data['time_id'], data['user_id'],
-            data['employee_id'], data['location_id'], data['service_id'],
-            data['company_id'], data['sms_sent'], item_id
-        )
+@router.put("/{reservation_id}", response_model=ReservationOut, responses={404: {"description": "Not found"}})
+def update_reservation(reservation_id: int, payload: ReservationIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM reservations WHERE id=%s", (reservation_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    cur.execute(
+        "UPDATE reservations SET user_id=%s, service_id=%s, location_id=%s, date=%s WHERE id=%s",
+        (payload.user_id, payload.service_id, payload.location_id, payload.date, reservation_id)
     )
-    conn.commit()
-    conn.close()
-    return {"message": "Reservation updated"}
+    conn.commit(); cur.close(); conn.close()
+    return ReservationOut(id=reservation_id, **payload.dict())
 
-@router.delete("/{item_id}")
-def delete(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM reservation WHERE id = %s", (item_id,))
-    conn.commit()
-    conn.close()
-    return {"message": "Reservation deleted"}
+@router.delete("/{reservation_id}", status_code=status.HTTP_204_NO_CONTENT, responses={404: {"description": "Not found"}})
+def delete_reservation(reservation_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM reservations WHERE id=%s", (reservation_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    cur.execute("DELETE FROM reservations WHERE id=%s", (reservation_id,))
+    conn.commit(); cur.close(); conn.close()
+    return None

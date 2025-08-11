@@ -1,57 +1,59 @@
-from fastapi import APIRouter, HTTPException
-from app.db import get_connection
+from fastapi import APIRouter, HTTPException, status
+from app.db import get_db_connection
+from app.models import EmployeeIn, EmployeeOut
 
-router = APIRouter()
+router = APIRouter(prefix="/employees", tags=["employees"])
 
-@router.get("/")
-def get_all():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM employee")
-    results = cursor.fetchall()
-    conn.close()
-    return results
+@router.get("/", response_model=list[EmployeeOut])
+def list_employees():
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, name, role FROM employees")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return rows
 
-@router.get("/{item_id}")
-def get_one(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM employee WHERE id = %s", (item_id,))
-    item = cursor.fetchone()
-    conn.close()
-    if not item:
+@router.get("/{employee_id}", response_model=EmployeeOut, responses={404: {"description": "Not found"}})
+def get_employee(employee_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, name, role FROM employees WHERE id=%s", (employee_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
         raise HTTPException(status_code=404, detail="Employee not found")
-    return item
+    return row
 
-@router.post("/")
-def create(data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO employee (first_name, last_name, position, employee_code, emso) VALUES (%s, %s, %s, %s, %s)",
-        (data['first_name'], data['last_name'], data['position'], data['employee_code'], data['emso'])
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "Employee created"}
+@router.post("/", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED,
+             responses={400: {"description": "Bad request"}})
+def create_employee(payload: EmployeeIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("INSERT INTO employees (name, role) VALUES (%s, %s)", (payload.name, payload.role))
+        conn.commit(); new_id = cur.lastrowid
+    except Exception as e:
+        conn.rollback(); raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close(); conn.close()
+    return EmployeeOut(id=new_id, **payload.dict())
 
-@router.put("/{item_id}")
-def update(item_id: int, data: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE employee SET first_name = %s, last_name = %s, position = %s, employee_code = %s, emso = %s WHERE id = %s",
-        (data['first_name'], data['last_name'], data['position'], data['employee_code'], data['emso'], item_id)
-    )
-    conn.commit()
-    conn.close()
-    return {"message": "Employee updated"}
+@router.put("/{employee_id}", response_model=EmployeeOut, responses={404: {"description": "Not found"}})
+def update_employee(employee_id: int, payload: EmployeeIn):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM employees WHERE id=%s", (employee_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="Employee not found")
+    cur.execute("UPDATE employees SET name=%s, role=%s WHERE id=%s",
+                (payload.name, payload.role, employee_id))
+    conn.commit(); cur.close(); conn.close()
+    return EmployeeOut(id=employee_id, **payload.dict())
 
-@router.delete("/{item_id}")
-def delete(item_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM employee WHERE id = %s", (item_id,))
-    conn.commit()
-    conn.close()
-    return {"message": "Employee deleted"}
+@router.delete("/{employee_id}", status_code=status.HTTP_204_NO_CONTENT, responses={404: {"description": "Not found"}})
+def delete_employee(employee_id: int):
+    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id FROM employees WHERE id=%s", (employee_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise HTTPException(status_code=404, detail="Employee not found")
+    cur.execute("DELETE FROM employees WHERE id=%s", (employee_id,))
+    conn.commit(); cur.close(); conn.close()
+    return None
