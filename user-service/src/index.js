@@ -30,6 +30,11 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 // Swagger docs
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
+const { startGraphQL } = require('./graphql');
+(async () => {
+  await startGraphQL(app, '/api/graphql');
+})();
+
 // Start server
 app.listen(PORT, () => {
   console.log(`User Service running at http://localhost:${PORT}`);

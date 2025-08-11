@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # USER SERVICE + DATABASE
+  # === USER SERVICE + DATABASE ===
   user-service:
     build: ./user-service
     container_name: user-service
@@ -9,12 +9,15 @@ services:
       - "3000:3000"
     depends_on:
       - user-mysql
+      - calendar-service          # čekaj i kalendar (nije striktno, ali praktično)
     environment:
       DB_HOST: user-mysql
       DB_USER: root
       DB_PASSWORD: root
       DB_NAME: user_service_db
       PORT: 3000
+      # URL za integraciju s calendar-service (isti network hostname)
+      CALENDAR_URL: http://calendar-service:8080
     volumes:
       - ./user-service:/app
     restart: unless-stopped
@@ -34,7 +37,7 @@ services:
     networks:
       - soa-net
 
-  # ANALYTICS SERVICE + DATABASE
+  # === ANALYTICS SERVICE + DATABASE ===
   analytics-service:
     build: ./analytics-service
     container_name: analytics-service
@@ -62,6 +65,22 @@ services:
     volumes:
       - analytics_mysql_data:/var/lib/mysql
       - ./analytics-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - soa-net
+
+  # === NEW: CALENDAR SERVICE (Google Calendar) ===
+  calendar-service:
+    build: ./calendar-service
+    container_name: calendar-service
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      # vrijednosti čita iz .env u rootu (Compose ih prošverca ovdje)
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL}
+      GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY}
+      CALENDAR_ID: ${CALENDAR_ID}
+    restart: unless-stopped
     networks:
       - soa-net
 

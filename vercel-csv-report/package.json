@@ -1,0 +1,8 @@
+{
+  "name": "csv-report",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "papaparse": "^5.4.1"
+  }
+}
