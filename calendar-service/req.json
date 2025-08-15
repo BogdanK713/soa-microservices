@@ -1,0 +1,7 @@
+{
+  "summary": "Reservation #123",
+  "description": "User X reserved Service Y at Location Z",
+  "start": "2025-08-12T10:00:00Z",
+  "end": "2025-08-12T10:30:00Z",
+  "attendees": [{ "email": "example@example.com", "name": "Example" }]
+}

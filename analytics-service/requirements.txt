@@ -3,3 +3,5 @@ uvicorn
 mysql-connector-python
 python-dotenv
 pydantic
+PyYAML==6.0.2
+email-validator

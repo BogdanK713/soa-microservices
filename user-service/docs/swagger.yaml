@@ -9,10 +9,8 @@ info:
 servers:
   - url: http://localhost:3000/api
     description: Localhost
-
   - url: http://user-service:3000/api
     description: Docker network
-
 
 tags:
   - name: health
@@ -25,6 +23,8 @@ tags:
     description: Favorite kompanije korisnika
   - name: reservations
     description: Upravljanje rezervacijama
+  - name: graphql
+    description: GraphQL endpoint
 
 paths:
   /health:
@@ -41,6 +41,56 @@ paths:
               examples:
                 ok:
                   value: { status: "ok" }
+
+  /api/graphql:
+    post:
+      tags: [graphql]
+      summary: GraphQL endpoint (Apollo Server)
+      description: >
+        Pošalji GraphQL **query/mutation** u `{"query":"...", "variables":{}}` formatu.
+        Primjeri query-ja su u GraphQL Sandbox-u ili README-u.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  example: |
+                    query {
+                      users { id first_name last_name email }
+                    }
+                variables:
+                  type: object
+                  additionalProperties: true
+              required: [query]
+            examples:
+              users:
+                value:
+                  query: |
+                    query {
+                      users { id first_name last_name email }
+                    }
+                  variables: {}
+      responses:
+        '200':
+          description: GraphQL response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: object }
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        message: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /users:
     get:

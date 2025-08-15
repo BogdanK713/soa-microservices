@@ -2,7 +2,6 @@ const fs = require('fs');
 const { google } = require('googleapis');
 
 function buildAuth() {
-  // Preferiramo key fajl ako je zadan
   const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (keyPath && fs.existsSync(keyPath)) {
     return new google.auth.GoogleAuth({
@@ -11,14 +10,16 @@ function buildAuth() {
     });
   }
 
-  // Fallback na email + private key iz ENV-a
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let privateKey = process.env.GOOGLE_PRIVATE_KEY;
 
   if (!email || !privateKey) {
-    throw new Error('Google Calendar auth nije podešen.');
+    throw new Error(
+      'Google Calendar auth nije podešen. Nedostaje GOOGLE_APPLICATION_CREDENTIALS ili (GOOGLE_SERVICE_ACCOUNT_EMAIL + GOOGLE_PRIVATE_KEY).'
+    );
   }
 
+  // zamijeni \n u ENV-u u prave nove redove
   privateKey = privateKey.replace(/\\n/g, '\n');
 
   return new google.auth.JWT({
@@ -63,26 +64,41 @@ async function createEvent({ summary, description, start, end, attendees = [] })
 
   const now = new Date();
   const startDate = start ? new Date(start) : now;
-  const endDate = end ? new Date(end) : new Date(startDate.getTime() + 30 * 60000);
+  const endDate   = end   ? new Date(end)   : new Date(startDate.getTime() + 30 * 60000);
 
   if (isNaN(startDate) || isNaN(endDate) || endDate <= startDate) {
     throw new Error('Invalid start/end');
   }
 
+  // Ako želiš striktno zabraniti attendees na privatnom Gmailu,
+  // drži ALLOW_ATTENDEES != 'true' (default).
+  const allowAttendees = process.env.ALLOW_ATTENDEES === 'true';
+  const safeAttendees = allowAttendees
+    ? (attendees || []).filter(a => a && a.email).slice(0, 20)
+        .map(a => ({ email: a.email, displayName: a.name }))
+    : undefined;
+
   const event = {
     summary: summary || 'Reservation',
     description: description || '',
     start: { dateTime: startDate.toISOString(), timeZone: TZ },
-    end: { dateTime: endDate.toISOString(), timeZone: TZ },
-    attendees: (attendees || [])
-      .filter((a) => a && a.email)
-      .slice(0, 20)
-      .map((a) => ({ email: a.email, displayName: a.name })),
+    end:   { dateTime: endDate.toISOString(),   timeZone: TZ },
   };
 
-  const res = await calendar.events.insert({ calendarId, requestBody: event });
+  if (safeAttendees && safeAttendees.length) {
+    event.attendees = safeAttendees;
+  }
+
+  // Ključni dio: onemogući slanje update-a / emailova
+  const res = await calendar.events.insert({
+    calendarId,
+    requestBody: event,
+    sendUpdates: 'none',        // 'all' | 'externalOnly' | 'none'
+  });
+
   return res.data;
 }
+
 
 async function deleteEvent(eventId) {
   const calendarId = process.env.CALENDAR_ID;

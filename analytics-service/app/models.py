@@ -1,89 +1,96 @@
-from pydantic import BaseModel, Field, conint, confloat
+# analytics-service/app/models.py
+import datetime as dt
 from typing import Optional
-from datetime import date, datetime
+from pydantic import BaseModel, Field, EmailStr
 
-class Message(BaseModel):
-    message: str
-
+# ---------- Users ----------
 class UserIn(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    email: str = Field(..., min_length=3, max_length=255)
+    first_name: Optional[str] = Field(None, example="Ana")
+    last_name: Optional[str] = Field(None, example="Novak")
+    email: EmailStr = Field(..., example="ana@example.com")
 
 class UserOut(UserIn):
     id: int
 
-class EmployeeIn(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    role: str = Field(..., min_length=1, max_length=255)
-
-class EmployeeOut(EmployeeIn):
-    id: int
-
-class LocationIn(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    address: Optional[str] = Field(None, max_length=255)
-
-class LocationOut(LocationIn):
-    id: int
-
-class ServiceIn(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    description: Optional[str] = Field(None, max_length=1000)
-    price: confloat(ge=0)
-
-class ServiceOut(ServiceIn):
-    id: int
-
+# ---------- Time Dimension ----------
 class TimeDimIn(BaseModel):
-    date: date
-    year: conint(ge=1970, le=2100)
-    month: conint(ge=1, le=12)
-    day: conint(ge=1, le=31)
+    date: dt.date = Field(..., example="2025-05-15")
+    year: int = Field(..., ge=1970, le=2100, example=2025)
+    month: int = Field(..., ge=1, le=12, example=5)
+    day: int = Field(..., ge=1, le=31, example=15)
 
 class TimeDimOut(TimeDimIn):
     id: int
 
-class ReservationIn(BaseModel):
-    user_id: int
-    service_id: int
-    location_id: int
-    date: date
+# ---------- Employees ----------
+class EmployeeIn(BaseModel):
+    name: str = Field(..., example="Marko Marković")
+    role: Optional[str] = Field(None, example="Barber")
 
-class ReservationOut(ReservationIn):
+class EmployeeOut(EmployeeIn):
     id: int
 
+# ---------- Locations ----------
+class LocationIn(BaseModel):
+    name: str = Field(..., example="Center")
+    address: Optional[str] = Field(None, example="Glavna 1")
+
+class LocationOut(LocationIn):
+    id: int
+
+# ---------- Services ----------
+class ServiceIn(BaseModel):
+    name: str = Field(..., example="Haircut")
+    description: Optional[str] = Field(None, example="Regular haircut")
+    price: float = Field(..., ge=0, example=19.99)
+
+class ServiceOut(ServiceIn):
+    id: int
+
+# ---------- Payments ----------
 class PaymentIn(BaseModel):
-    reservation_id: int
-    amount: confloat(ge=0)
-    method: str = Field(..., min_length=1, max_length=64)
-    paid_at: datetime
+    reservation_id: int = Field(..., example=101)
+    amount: float = Field(..., ge=0, example=29.00)
+    method: Optional[str] = Field(None, example="card")
+    paid_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 
 class PaymentOut(PaymentIn):
     id: int
 
+# ---------- Cancellations ----------
 class CancellationIn(BaseModel):
-    reservation_id: int
-    reason: Optional[str] = Field(None, max_length=500)
-    cancelled_at: datetime
+    reservation_id: int = Field(..., example=101)
+    reason: Optional[str] = Field(None, example="customer no-show")
+    cancelled_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 
 class CancellationOut(CancellationIn):
     id: int
 
+# ---------- Reservations ----------
+class ReservationIn(BaseModel):
+    user_id: int = Field(..., example=5)
+    service_id: int = Field(..., example=2)
+    location_id: int = Field(..., example=1)
+    date: dt.date = Field(..., example="2025-05-15")
+    amount: Optional[float] = Field(None, ge=0, example=29.0)
+
+class ReservationOut(ReservationIn):
+    id: int
+
+# ---------- Analytics DTOs (za /analytics/* rute) ----------
 class ReservationsPerMonthItem(BaseModel):
-    year: int
-    month: int
-    total: int
+    month: int = Field(..., ge=1, le=12, example=5)
+    count: int = Field(..., ge=0, example=42)
 
 class RevenueByServiceItem(BaseModel):
-    service_id: int
-    service_name: str
-    revenue: float
+    service_name: str = Field(..., example="Haircut")
+    total_revenue: float = Field(..., ge=0, example=199.95)
 
 class ReservationsByLocationItem(BaseModel):
-    location_id: int
-    location_name: str
-    total: int
+    location_name: str = Field(..., example="Center")
+    count: int = Field(..., ge=0, example=30)
 
 class TopUserItem(BaseModel):
-    user_id: int
-    total_reservations: int
+    user_id: int = Field(..., example=5)
+    user_email: EmailStr = Field(..., example="ana@example.com")
+    total_amount: float = Field(..., ge=0, example=349.50)

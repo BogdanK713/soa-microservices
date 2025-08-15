@@ -1,0 +1,655 @@
+openapi: 3.0.3
+info:
+  title: Analytics Service API
+  version: 1.0.0
+  description: |
+    FastAPI servis za CRUD nad entitetima (locations, employees, services, time, reservations, payments, cancellations)
+    i agregatne analitike. Servis već ima automatski Swagger na /docs; ovaj je statični OpenAPI fajl za repozitorij.
+
+servers:
+  - url: http://localhost:8000
+    description: Local dev (FastAPI)
+  - url: http://analytics-service:8000
+    description: Docker network
+
+tags:
+  - name: health
+  - name: employees
+  - name: locations
+  - name: services
+  - name: time
+  - name: reservations
+  - name: payments
+  - name: cancellations
+  - name: analytics
+
+paths:
+  /:
+    get:
+      tags: [health]
+      summary: Root ping
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RootStatus' }
+
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /employees/:
+    get:
+      tags: [employees]
+      summary: Lista zaposlenih
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EmployeeOut' }
+    post:
+      tags: [employees]
+      summary: Kreiraj zaposlenog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmployeeOut' }
+
+  /employees/{employee_id}:
+    get:
+      tags: [employees]
+      summary: Dohvati zaposlenog
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmployeeOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [employees]
+      summary: Ažuriraj zaposlenog
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmployeeOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [employees]
+      summary: Obriši zaposlenog
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /locations/:
+    get:
+      tags: [locations]
+      summary: Lista lokacija
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/LocationOut' }
+    post:
+      tags: [locations]
+      summary: Kreiraj lokaciju
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocationIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocationOut' }
+
+  /locations/{location_id}:
+    get:
+      tags: [locations]
+      summary: Dohvati lokaciju
+      parameters:
+        - $ref: '#/components/parameters/LocationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocationOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [locations]
+      summary: Ažuriraj lokaciju
+      parameters:
+        - $ref: '#/components/parameters/LocationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocationIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocationOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [locations]
+      summary: Obriši lokaciju
+      parameters:
+        - $ref: '#/components/parameters/LocationId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # (Ako koristiš i ove rutere, struktura je ista kao gore – CRUD)
+  /services/:
+    get:
+      tags: [services]
+      summary: Lista usluga
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServiceOut' }
+    post:
+      tags: [services]
+      summary: Kreiraj uslugu
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceOut' }
+
+  /services/{service_id}:
+    get:
+      tags: [services]
+      summary: Dohvati uslugu
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [services]
+      summary: Ažuriraj uslugu
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [services]
+      summary: Obriši uslugu
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /time/:
+    get:
+      tags: [time]
+      summary: Lista kalendarskih dana (dimenzija vremena)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TimeDimOut' }
+    post:
+      tags: [time]
+      summary: Kreiraj zapis vremena
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TimeDimIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimeDimOut' }
+
+  /reservations/:
+    get:
+      tags: [reservations]
+      summary: Lista rezervacija
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReservationOut' }
+    post:
+      tags: [reservations]
+      summary: Kreiraj rezervaciju
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReservationIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationOut' }
+
+  /reservations/{reservation_id}:
+    get:
+      tags: [reservations]
+      summary: Dohvati rezervaciju
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [reservations]
+      summary: Ažuriraj rezervaciju
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReservationIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [reservations]
+      summary: Obriši rezervaciju
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /payments/:
+    get:
+      tags: [payments]
+      summary: Lista uplata
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PaymentOut' }
+    post:
+      tags: [payments]
+      summary: Kreiraj uplatu
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentOut' }
+
+  /payments/{payment_id}:
+    get:
+      tags: [payments]
+      summary: Dohvati uplatu
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [payments]
+      summary: Obriši uplatu
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cancellations/:
+    get:
+      tags: [cancellations]
+      summary: Lista otkazivanja
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CancellationOut' }
+    post:
+      tags: [cancellations]
+      summary: Kreiraj otkazivanje
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancellationIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancellationOut' }
+
+  /cancellations/{cancellation_id}:
+    get:
+      tags: [cancellations]
+      summary: Dohvati otkazivanje
+      parameters:
+        - $ref: '#/components/parameters/CancellationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancellationOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [cancellations]
+      summary: Obriši otkazivanje
+      parameters:
+        - $ref: '#/components/parameters/CancellationId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /analytics/reservations-per-month:
+    get:
+      tags: [analytics]
+      summary: Broj rezervacija po mjesecima
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReservationsPerMonthItem' }
+
+  /analytics/revenue-by-service:
+    get:
+      tags: [analytics]
+      summary: Prihod po usluzi
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RevenueByServiceItem' }
+
+  /analytics/reservations-by-location:
+    get:
+      tags: [analytics]
+      summary: Rezervacije po lokaciji
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReservationsByLocationItem' }
+
+  /analytics/top-users:
+    get:
+      tags: [analytics]
+      summary: Top korisnici po broju rezervacija
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TopUserItem' }
+
+components:
+  parameters:
+    EmployeeId: { name: employee_id, in: path, required: true, schema: { type: integer } }
+    LocationId: { name: location_id, in: path, required: true, schema: { type: integer } }
+    ServiceId:  { name: service_id,  in: path, required: true, schema: { type: integer } }
+    ReservationId: { name: reservation_id, in: path, required: true, schema: { type: integer } }
+    PaymentId: { name: payment_id, in: path, required: true, schema: { type: integer } }
+    CancellationId: { name: cancellation_id, in: path, required: true, schema: { type: integer } }
+
+  responses:
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples: { sample: { value: { detail: "Not found" } } }
+
+  schemas:
+    RootStatus:
+      type: object
+      properties:
+        service: { type: string, example: analytics }
+        status: { type: string, example: ok }
+
+    Health:
+      type: object
+      properties:
+        status: { type: string }
+      required: [status]
+
+    Error:
+      type: object
+      properties:
+        detail: { type: string }
+      required: [detail]
+
+    EmployeeIn:
+      type: object
+      properties:
+        name: { type: string }
+        role: { type: string }
+      required: [name, role]
+    EmployeeOut:
+      allOf:
+        - $ref: '#/components/schemas/EmployeeIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    LocationIn:
+      type: object
+      properties:
+        name: { type: string }
+        address: { type: string, nullable: true }
+      required: [name]
+    LocationOut:
+      allOf:
+        - $ref: '#/components/schemas/LocationIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    ServiceIn:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string, nullable: true }
+        price: { type: number, format: float, minimum: 0 }
+      required: [name, price]
+    ServiceOut:
+      allOf:
+        - $ref: '#/components/schemas/ServiceIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    TimeDimIn:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        year: { type: integer, minimum: 1970, maximum: 2100 }
+        month: { type: integer, minimum: 1, maximum: 12 }
+        day: { type: integer, minimum: 1, maximum: 31 }
+      required: [date, year, month, day]
+    TimeDimOut:
+      allOf:
+        - $ref: '#/components/schemas/TimeDimIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    ReservationIn:
+      type: object
+      properties:
+        user_id: { type: integer }
+        service_id: { type: integer }
+        location_id: { type: integer }
+        date: { type: string, format: date }
+      required: [user_id, service_id, location_id, date]
+    ReservationOut:
+      allOf:
+        - $ref: '#/components/schemas/ReservationIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    PaymentIn:
+      type: object
+      properties:
+        reservation_id: { type: integer }
+        amount: { type: number, format: float, minimum: 0 }
+        method: { type: string }
+        paid_at: { type: string, format: date-time }
+      required: [reservation_id, amount, method, paid_at]
+    PaymentOut:
+      allOf:
+        - $ref: '#/components/schemas/PaymentIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    CancellationIn:
+      type: object
+      properties:
+        reservation_id: { type: integer }
+        reason: { type: string, nullable: true }
+        cancelled_at: { type: string, format: date-time }
+      required: [reservation_id, cancelled_at]
+    CancellationOut:
+      allOf:
+        - $ref: '#/components/schemas/CancellationIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    ReservationsPerMonthItem:
+      type: object
+      properties:
+        year: { type: integer }
+        month: { type: integer }
+        total: { type: integer }
+      required: [year, month, total]
+
+    RevenueByServiceItem:
+      type: object
+      properties:
+        service_id: { type: integer }
+        service_name: { type: string }
+        revenue: { type: number, format: float }
+      required: [service_id, service_name, revenue]
+
+    ReservationsByLocationItem:
+      type: object
+      properties:
+        location_id: { type: integer }
+        location_name: { type: string }
+        total: { type: integer }
+      required: [location_id, location_name, total]
+
+    TopUserItem:
+      type: object
+      properties:
+        user_id: { type: integer }
+        total_reservations: { type: integer }
+      required: [user_id, total_reservations]

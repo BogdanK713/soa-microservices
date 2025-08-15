@@ -1,38 +1,44 @@
-const { GraphQLScalarType, Kind } = require('graphql');
+// user-service/src/graphql/resolvers.js
 const db = require('../config/db');
-
-const DateScalar = new GraphQLScalarType({
-  name: 'Date',
-  parseValue: (value) => new Date(value),
-  serialize: (value) => new Date(value).toISOString(),
-  parseLiteral: (ast) => (ast.kind === Kind.STRING ? new Date(ast.value) : null),
-});
+const Users = require('../models/userModel');
+const Locations = require('../models/locationModel');
+const Reservations = require('../models/reservationModel');
 
 module.exports = {
-  Date: DateScalar,
-
   Query: {
-    async users() {
-      const [rows] = await db.query('SELECT id, name, email FROM users');
-      return rows;
-    },
-    async reservationsByUser(_, { userId }) {
-      const [rows] = await db.query(
-        'SELECT id, user_id AS userId, location_id AS locationId, service_id AS serviceId, created_at AS createdAt FROM reservations WHERE user_id = ?',
-        [userId]
-      );
-      return rows;
+    // USERS
+    users: () => Users.getAllUsers(),
+    user: (_p, { id }) => Users.getUserById(id),
+
+    // RESERVATIONS
+    reservations: () => Reservations.getAllReservations(),
+    reservation: (_p, { id }) => Reservations.getReservationById(id),
+    reservationsByUser: (_p, { userId }) => Reservations.getReservationsByUser(userId),
+  },
+
+  User: {
+    // napravi "First Last" iz first_name/last_name (ili vrati name ako je već spojeno)
+    name: (u) => {
+      const f = u.first_name || u.firstName || '';
+      const l = u.last_name || u.lastName || '';
+      return [f, l].filter(Boolean).join(' ').trim() || u.name || '';
     },
   },
 
   Reservation: {
-    async user(parent) {
-      const [rows] = await db.query('SELECT id, name, email FROM users WHERE id = ?', [parent.userId]);
-      return rows[0] || null;
+    // alias za kompatibilnost – pretvori createdAt u ISO string
+    date: (r) => (r.createdAt ? new Date(r.createdAt).toISOString() : null),
+
+    user: (r) => Users.getUserById(r.userId),
+    location: async (r) => {
+      if (!r.locationId) return null;
+      // prilagodi prema tvom locationModel-u (ako već imaš getLocationById)
+      return Locations.getLocationById
+        ? Locations.getLocationById(r.locationId)
+        : null;
     },
-    async location(parent) {
-      const [rows] = await db.query('SELECT id, name, address FROM locations WHERE id = ?', [parent.locationId]);
-      return rows[0] || null;
-    },
+
+    // amount: vrati broj ili null (ako kolona ne postoji)
+    amount: (r) => (r.amount != null ? Number(r.amount) : null),
   },
 };
