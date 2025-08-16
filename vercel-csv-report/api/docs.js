@@ -1,27 +1,27 @@
-// api/docs.js
+// vercel-csv-report/api/docs.js
 export default function handler(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.end(`<!doctype html>
+  res.send(`<!doctype html>
 <html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Vercel CSV Report - Docs</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css">
-  <style>
-    html, body { margin: 0; background: #fafafa; }
-    #swagger-ui { max-width: 1200px; margin: 0 auto; }
-  </style>
-</head>
-<body>
-  <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
-  <script>
-    window.ui = SwaggerUIBundle({
-      url: "/openapi.yaml",
-      dom_id: "#swagger-ui"
-    });
-  </script>
-</body>
+  <head>
+    <meta charset="utf-8"/>
+    <title>CSV Report – API Docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      window.onload = () => {
+        SwaggerUIBundle({
+          // absolute path so it doesn't accidentally resolve to /api/openapi.yaml
+          url: '/openapi.yaml',
+          dom_id: '#swagger-ui',
+          presets: [SwaggerUIBundle.presets.apis],
+          layout: "BaseLayout"
+        });
+      };
+    </script>
+  </body>
 </html>`);
 }
