@@ -1,0 +1,240 @@
+openapi: 3.0.3
+info:
+  title: Calendar Service API
+  version: 1.0.0
+  description: |
+    Integracija s Google Calendar-om za listanje/kreiranje/brisanje događaja.
+    Tijela zahtjeva su **JSON**. Ako klijent pošalje pogrešan Content-Type ili nevalidan JSON,
+    servis pokušava fallback na raw body (vidi `/echo`).
+
+servers:
+  - url: http://localhost:8080
+    description: Localhost
+  - url: http://calendar-service:8080
+    description: Docker network
+  - url: https://calendar-service-1-0-0.onrender.com
+    description: Render (deploy)
+
+tags:
+  - name: health
+    description: Health check i meta
+  - name: events
+    description: Upravljanje kalendarskim događajima
+  - name: diag
+    description: Dijagnostika request body-ja
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+              examples:
+                ok:
+                  value: { status: "ok" }
+
+  /echo:
+    post:
+      tags: [diag]
+      summary: Vrati šta je zaista stiglo (debug)
+      description: |
+        Vraća `received` (parsiran JSON ako je validan), `raw` (sirovi tekst),
+        te `jsonParseError` kada je `Content-Type: application/json` ali je JSON nevalidan.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+          text/plain:
+            schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  jsonParseError: { type: boolean }
+                  bodyReadError: { type: string, nullable: true }
+                  received: { type: object, nullable: true, additionalProperties: true }
+                  raw: { type: string, nullable: true }
+
+  /events:
+    get:
+      tags: [events]
+      summary: Lista događaja
+      parameters:
+        - name: timeMin
+          in: query
+          schema: { type: string, format: date-time }
+          description: ISO start (default: now - 24h)
+        - name: timeMax
+          in: query
+          schema: { type: string, format: date-time }
+          description: ISO end (default: now + 30d)
+        - name: maxResults
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 2500, default: 50 }
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Tekstualna pretraga (Google Calendar `q`)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/EventOut' }
+              examples:
+                sample:
+                  value:
+                    ok: true
+                    items:
+                      - id: "abc123"
+                        status: "confirmed"
+                        summary: "Reservation #124"
+                        htmlLink: "https://www.google.com/calendar/event?eid=..."
+                        start: { dateTime: "2025-08-12T10:00:00Z", timeZone: "UTC" }
+                        end:   { dateTime: "2025-08-12T10:30:00Z", timeZone: "UTC" }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+    post:
+      tags: [events]
+      summary: Kreiraj događaj
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventIn' }
+            examples:
+              simple:
+                value:
+                  summary: "Reservation #124"
+                  description: "Demo 2"
+                  start: "2025-08-12T10:00:00Z"
+                  end: "2025-08-12T10:30:00Z"
+                  attendees:
+                    - { email: "example@example.com", name: "Example" }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  event: { $ref: '#/components/schemas/EventOut' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /events/{id}:
+    delete:
+      tags: [events]
+      summary: Obriši događaj
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: ID događaja na Google Calendar-u
+      responses:
+        '200':
+          description: Obrisano
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+              examples:
+                ok:
+                  value: { ok: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+components:
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalidJson:
+              value: { ok: false, error: "Invalid JSON in request body" }
+            missing:
+              value: { ok: false, error: "Missing JSON body" }
+            message:
+              value: { ok: false, error: "Invalid start/end" }
+
+  schemas:
+    Health:
+      type: object
+      properties:
+        status: { type: string }
+      required: [status]
+
+    Error:
+      type: object
+      properties:
+        ok: { type: boolean, example: false }
+        error: { type: string }
+      required: [error]
+
+    Attendee:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        name: { type: string }
+      required: [email]
+
+    EventIn:
+      type: object
+      properties:
+        summary: { type: string }
+        description: { type: string }
+        start: { type: string, format: date-time, description: ISO8601 }
+        end:   { type: string, format: date-time, description: ISO8601 }
+        attendees:
+          type: array
+          items: { $ref: '#/components/schemas/Attendee' }
+      required: [start, end]
+
+    EventOut:
+      type: object
+      description: Minimalni subset Google Calendar Event objekta
+      properties:
+        id: { type: string }
+        status: { type: string }
+        htmlLink: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        start:
+          type: object
+          properties:
+            dateTime: { type: string, format: date-time }
+            timeZone: { type: string }
+        end:
+          type: object
+          properties:
+            dateTime: { type: string, format: date-time }
+            timeZone: { type: string }
+        attendees:
+          type: array
+          items:
+            type: object
+            properties:
+              email: { type: string, format: email }
+              displayName: { type: string }

@@ -2,6 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const { listEvents, createEvent, deleteEvent } = require('./google');
+const path = require('path');
+const swaggerUi = require('swagger-ui-express');
+const YAML = require('yamljs');
 
 const app = express();
 
@@ -9,7 +12,14 @@ const app = express();
 app.use(cors());
 app.use(morgan('tiny'));
 
-// TOLERANTNI RAW BODY PARSER: nikad ne vraća 400 u middleware-u.
+// --- Swagger UI & OpenAPI ---
+const openapi = YAML.load(path.join(__dirname, 'docs', 'openapi.yaml'));
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapi));
+app.get('/openapi.yaml', (_req, res) => {
+  res.type('text/yaml').send(YAML.stringify(openapi, 10, 2));
+});
+app.get('/openapi.json', (_req, res) => res.json(openapi));
+
 // Uvijek popuni req.rawBody, a req.body ako je validan JSON.
 app.use((req, res, next) => {
   let data = '';

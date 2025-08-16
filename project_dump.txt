@@ -352,10 +352,9 @@ FILE: analytics-service\app\models.py
 ================================================================================
 
 # analytics-service/app/models.py
-from typing import Optional, List
-from datetime import date, datetime
+import datetime as dt
+from typing import Optional
 from pydantic import BaseModel, Field, EmailStr
-
 
 # ---------- Users ----------
 class UserIn(BaseModel):
@@ -363,96 +362,91 @@ class UserIn(BaseModel):
     last_name: Optional[str] = Field(None, example="Novak")
     email: EmailStr = Field(..., example="ana@example.com")
 
-
 class UserOut(UserIn):
     id: int
 
+# ---------- Time Dimension ----------
+class TimeDimIn(BaseModel):
+    date: dt.date = Field(..., example="2025-05-15")
+    year: int = Field(..., ge=1970, le=2100, example=2025)
+    month: int = Field(..., ge=1, le=12, example=5)
+    day: int = Field(..., ge=1, le=31, example=15)
 
-# ---------- Times (e.g. business hours, slots) ----------
-class TimeIn(BaseModel):
-    day_of_week: int = Field(..., ge=0, le=6, example=1)  # 0=Mon .. 6=Sun
-    open_time: str = Field(..., example="09:00")
-    close_time: str = Field(..., example="17:00")
-
-
-class TimeOut(TimeIn):
+class TimeDimOut(TimeDimIn):
     id: int
-
 
 # ---------- Employees ----------
 class EmployeeIn(BaseModel):
     name: str = Field(..., example="Marko Marković")
     role: Optional[str] = Field(None, example="Barber")
 
-
 class EmployeeOut(EmployeeIn):
     id: int
 
-
 # ---------- Locations ----------
 class LocationIn(BaseModel):
-    city: str = Field(..., example="Podgorica")
-    country: str = Field(..., example="ME")
-
+    name: str = Field(..., example="Center")
+    address: Optional[str] = Field(None, example="Glavna 1")
 
 class LocationOut(LocationIn):
     id: int
 
-
 # ---------- Services ----------
 class ServiceIn(BaseModel):
     name: str = Field(..., example="Haircut")
-    price: Optional[float] = Field(None, ge=0, example=19.99)
-
+    description: Optional[str] = Field(None, example="Regular haircut")
+    price: float = Field(..., ge=0, example=19.99)
 
 class ServiceOut(ServiceIn):
     id: int
-
 
 # ---------- Payments ----------
 class PaymentIn(BaseModel):
     reservation_id: int = Field(..., example=101)
     amount: float = Field(..., ge=0, example=29.00)
     method: Optional[str] = Field(None, example="card")
-
+    paid_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 
 class PaymentOut(PaymentIn):
     id: int
-
 
 # ---------- Cancellations ----------
 class CancellationIn(BaseModel):
     reservation_id: int = Field(..., example=101)
     reason: Optional[str] = Field(None, example="customer no-show")
-
+    cancelled_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 
 class CancellationOut(CancellationIn):
     id: int
-
 
 # ---------- Reservations ----------
 class ReservationIn(BaseModel):
     user_id: int = Field(..., example=5)
     service_id: int = Field(..., example=2)
-    location_id: Optional[int] = Field(None, example=1)
-    date: date = Field(..., example="2025-05-15")
-    amount: Optional[float] = Field(None, ge=0, example=29.0)  # optional if you don’t store amounts
-
+    location_id: int = Field(..., example=1)
+    date: dt.date = Field(..., example="2025-05-15")
+    amount: Optional[float] = Field(None, ge=0, example=29.0)
 
 class ReservationOut(ReservationIn):
     id: int
-    created_at: Optional[datetime] = None
 
+# ---------- Analytics DTOs (za /analytics/* rute) ----------
+class ReservationsPerMonthItem(BaseModel):
+    month: int = Field(..., ge=1, le=12, example=5)
+    count: int = Field(..., ge=0, example=42)
 
-# Optional Pydantic V1 compatibility for ORMs (harmless if unused)
-for _cls in [
-    UserOut, TimeOut, EmployeeOut, LocationOut, ServiceOut,
-    PaymentOut, CancellationOut, ReservationOut
-]:
-    try:
-        _cls.Config.orm_mode = True  # type: ignore[attr-defined]
-    except Exception:
-        pass
+class RevenueByServiceItem(BaseModel):
+    service_name: str = Field(..., example="Haircut")
+    total_revenue: float = Field(..., ge=0, example=199.95)
+
+class ReservationsByLocationItem(BaseModel):
+    location_name: str = Field(..., example="Center")
+    count: int = Field(..., ge=0, example=30)
+
+class TopUserItem(BaseModel):
+    user_id: int = Field(..., example=5)
+    user_email: EmailStr = Field(..., example="ana@example.com")
+    total_amount: float = Field(..., ge=0, example=349.50)
 
 ================================================================================
 FILE: analytics-service\app\openapi.yaml
