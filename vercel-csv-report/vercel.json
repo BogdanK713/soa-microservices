@@ -1,7 +1,7 @@
 {
   "cleanUrls": true,
-  "routes": [
-    { "src": "/openapi.yaml", "dest": "/public/openapi.yaml" },
-    { "src": "/api/docs", "dest": "/api/docs.js" }
+  "rewrites": [
+    { "source": "/openapi.yaml", "destination": "/public/openapi.yaml" },
+    { "source": "/api/docs", "destination": "/api/docs.js" }
   ]
 }
