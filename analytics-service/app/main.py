@@ -15,6 +15,8 @@ from app.routes import (
     payment,
     cancellation,
     analytics,
+    reports, 
+    alerts
 )
 
 app = FastAPI(
@@ -42,6 +44,8 @@ app.include_router(reservation.router)
 app.include_router(payment.router)
 app.include_router(cancellation.router)
 app.include_router(analytics.router)
+app.include_router(reports.router)
+app.include_router(alerts.router)
 
 @app.get("/openapi.yaml", response_class=PlainTextResponse, include_in_schema=False)
 def openapi_yaml():

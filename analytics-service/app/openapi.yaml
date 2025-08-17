@@ -22,6 +22,8 @@ tags:
   - name: payments
   - name: cancellations
   - name: analytics
+  - name: reports
+  - name: alerts
 
 paths:
   /:
@@ -178,7 +180,6 @@ paths:
         '204': { description: Obrisano }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  # (Ako koristiš i ove rutere, struktura je ista kao gore – CRUD)
   /services/:
     get:
       tags: [services]
@@ -488,6 +489,138 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/TopUserItem' }
 
+  /reports/:
+    get:
+      tags: [reports]
+      summary: Lista sačuvanih izvještaja
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReportOut' }
+    post:
+      tags: [reports]
+      summary: Kreiraj izvještaj (definiciju)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportOut' }
+
+  /reports/{report_id}:
+    get:
+      tags: [reports]
+      summary: Dohvati izvještaj
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [reports]
+      summary: Ažuriraj izvještaj
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [reports]
+      summary: Obriši izvještaj
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /alerts/:
+    get:
+      tags: [alerts]
+      summary: Lista alarma
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertOut' }
+    post:
+      tags: [alerts]
+      summary: Kreiraj alarm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertOut' }
+
+  /alerts/{alert_id}:
+    get:
+      tags: [alerts]
+      summary: Dohvati alarm
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [alerts]
+      summary: Ažuriraj alarm
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [alerts]
+      summary: Obriši alarm
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   parameters:
     EmployeeId: { name: employee_id, in: path, required: true, schema: { type: integer } }
@@ -496,6 +629,8 @@ components:
     ReservationId: { name: reservation_id, in: path, required: true, schema: { type: integer } }
     PaymentId: { name: payment_id, in: path, required: true, schema: { type: integer } }
     CancellationId: { name: cancellation_id, in: path, required: true, schema: { type: integer } }
+    ReportId: { name: report_id, in: path, required: true, schema: { type: integer } }
+    AlertId:  { name: alert_id,  in: path, required: true, schema: { type: integer } }
 
   responses:
     NotFound:
@@ -653,3 +788,42 @@ components:
         user_id: { type: integer }
         total_reservations: { type: integer }
       required: [user_id, total_reservations]
+
+    ReportIn:
+      type: object
+      properties:
+        name: { type: string, example: 'Mesečni promet po uslugama' }
+        query:
+          type: object
+          additionalProperties: true
+          example: { type: 'revenue_by_service', from: '2025-01-01', to: '2025-01-31' }
+        schedule_cron:
+          type: string
+          nullable: true
+          example: '0 9 * * *'
+      required: [name, query]
+
+    ReportOut:
+      allOf:
+        - $ref: '#/components/schemas/ReportIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    AlertIn:
+      type: object
+      properties:
+        name: { type: string, example: 'Pad rezervacija' }
+        condition:
+          type: object
+          additionalProperties: true
+          example: { type: 'reservations_drop', threshold: 20 }
+        enabled: { type: boolean, example: true }
+      required: [name, condition]
+
+    AlertOut:
+      allOf:
+        - $ref: '#/components/schemas/AlertIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]

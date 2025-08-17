@@ -61,3 +61,21 @@ CREATE TABLE IF NOT EXISTS cancellations (
   cancelled_at DATETIME NOT NULL,
   FOREIGN KEY (reservation_id) REFERENCES reservations(id)
 );
+
+-- REPORTS
+CREATE TABLE IF NOT EXISTS report (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  query JSON NOT NULL,             
+  schedule_cron VARCHAR(64) NULL,   
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ALERTS
+CREATE TABLE IF NOT EXISTS alert (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  `condition` JSON NOT NULL,        
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

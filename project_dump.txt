@@ -51,98 +51,179 @@ Thumbs.db
 FILE: docker-compose.yml
 ================================================================================
 
-version: '3.8'
+# docker-compose.yml  (Compose v2 ne treba "version:")
+
+networks:
+  soa-net:
+
+volumes:
+  user_db_data:
+  employee-db-data:
+  analytics_mysql_data:
+  employee-storage:
 
 services:
-  # === USER SERVICE + DATABASE ===
-  user-service:
-    build: ./user-service
-    container_name: user-service
-    ports:
-      - "3000:3000"
-    depends_on:
-      - user-mysql
-      - calendar-service          # čekaj i kalendar (nije striktno, ali praktično)
-    environment:
-      DB_HOST: user-mysql
-      DB_USER: root
-      DB_PASSWORD: root
-      DB_NAME: user_service_db
-      PORT: 3000
-      # URL za integraciju s calendar-service (isti network hostname)
-      CALENDAR_URL: http://calendar-service:8080
-    volumes:
-      - ./user-service:/app
-    restart: unless-stopped
-    networks:
-      - soa-net
-
+  # ---------- USER (Node/Express) ----------
   user-mysql:
     image: mysql:8.0
     container_name: user-mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: user_service_db
+      MYSQL_USER: user_svc
+      MYSQL_PASSWORD: userpass
+    # host 3306 ti je već zauzet (vidim personal-finance-db-1), pa objavljujemo na 3309
+    ports:
+      - "3309:3306"
+    volumes:
+      - user_db_data:/var/lib/mysql
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    depends_on:
+      user-mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: user-mysql          # unutar mreže ostaje 3306
+      DB_PORT: "3306"
+      DB_USER: user_svc
+      DB_PASSWORD: userpass
+      DB_NAME: user_service_db
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    networks: [soa-net]
+    restart: unless-stopped
+
+  # ---------- EMPLOYEE (FastAPI) ----------
+  employee-db:
+    image: mysql:8.0
+    container_name: employee-db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: employee_db
+      MYSQL_USER: employee_user
+      MYSQL_PASSWORD: employeepass
     ports:
       - "3307:3306"
     volumes:
-      - user_mysql_data:/var/lib/mysql
-      - ./user-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - soa-net
+      - employee-db-data:/var/lib/mysql
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
-  # === ANALYTICS SERVICE + DATABASE ===
-  analytics-service:
-    build: ./analytics-service
-    container_name: analytics-service
-    ports:
-      - "8000:8000"
+  employee-svc:
+    build:
+      context: ./employee-service/employee-service
+      dockerfile: Dockerfile
+    container_name: employee-svc
     depends_on:
-      - analytics-mysql
+      employee-db:
+        condition: service_healthy
     environment:
-      DB_HOST: analytics-mysql
-      DB_USER: root
-      DB_PASSWORD: root
-      DB_NAME: reservation_service_db
+      DATABASE_URL: mysql+pymysql://employee_user:employeepass@employee-db:3306/employee_db
+      STORAGE_PATH: /storage
+      COMPANY_SERVICE_URL: http://company-service:8082/api
+      COMPANY_HTTP_CONNECT_TIMEOUT: "2.0"
+      COMPANY_HTTP_READ_TIMEOUT: "2.0"
+      COMPANY_VALIDATION_STRICT: "false"
+      COMPANY_VALIDATION_ENABLED: "true"
+      FAAS_BASE_URL: https://employee-utils-faas.onrender.com
+      FAAS_ENABLED: "true"
+      FAAS_CONNECT_TIMEOUT: "2.0"
+      FAAS_READ_TIMEOUT: "2.0"
+      FAAS_AUDIT_ENABLED: "true"
+      FAAS_AUDIT_SERVICE: employee-service
+    ports:
+      - "8010:8000"
     volumes:
-      - ./analytics-service/app:/app/app
-    networks:
-      - soa-net
+      - ./employee-service/employee-service/storage:/storage
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks: [soa-net]
+    restart: unless-stopped
 
+  # ---------- COMPANY / RESERVATION (Spring Boot) ----------
+  company-service:
+    build:
+      context: ./company-reservation-service/company-reservation-service
+      dockerfile: Dockerfile
+    container_name: company-service
+    environment:
+      USER_SERVICE_URL: http://user-service:3000/api
+    ports:
+      - "8082:8082"
+    networks: [soa-net]
+    restart: unless-stopped
+
+  # ---------- ANALYTICS (FastAPI) ----------
   analytics-mysql:
     image: mysql:8.0
     container_name: analytics-mysql
+    command: --default-authentication-plugin=mysql_native_password
     environment:
       MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: reservation_service_db
     ports:
       - "3308:3306"
     volumes:
       - analytics_mysql_data:/var/lib/mysql
-      - ./analytics-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - soa-net
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
-  # === NEW: CALENDAR SERVICE (Google Calendar) ===
+  analytics-service:
+    build:
+      context: ./analytics-service
+      dockerfile: Dockerfile
+    container_name: analytics-service
+    depends_on:
+      analytics-mysql:
+        condition: service_healthy
+      employee-svc:
+        condition: service_started
+      company-service:
+        condition: service_started
+    environment:
+      DB_HOST: analytics-mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: reservation_service_db
+      EMPLOYEE_BASE_URL: http://employee-svc:8000
+      COMPANY_BASE_URL:  http://company-service:8082
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks: [soa-net]
+    restart: unless-stopped
+
+  # ---------- CALENDAR (Node) ----------
   calendar-service:
-    build: ./calendar-service
+    build:
+      context: ./calendar-service
+      dockerfile: Dockerfile
     container_name: calendar-service
+    env_file:
+      - ./.env
     ports:
       - "8080:8080"
-    environment:
-      PORT: 8080
-      # vrijednosti čita iz .env u rootu (Compose ih prošverca ovdje)
-      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL}
-      GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY}
-      CALENDAR_ID: ${CALENDAR_ID}
+    networks: [soa-net]
     restart: unless-stopped
-    networks:
-      - soa-net
-
-volumes:
-  user_mysql_data:
-  analytics_mysql_data:
-
-networks:
-  soa-net:
 
 ================================================================================
 FILE: e.py
@@ -252,11 +333,55 @@ python-dotenv
 pydantic
 PyYAML==6.0.2
 email-validator
+requests
 
 ================================================================================
 FILE: analytics-service\app\__init__.py
 ================================================================================
 
+
+================================================================================
+FILE: analytics-service\app\clients.py
+================================================================================
+
+# app/clients.py
+import os, requests
+
+EMPLOYEE_BASE = os.getenv("EMPLOYEE_BASE_URL", "http://employee-service:8000")
+EMPLOYEE_API_PREFIX = os.getenv("EMPLOYEE_API_PREFIX", "")  # npr. "/api" ili ""
+
+COMPANY_BASE  = os.getenv("COMPANY_BASE_URL",  "http://company-reservation-service:8082")
+COMPANY_API_PREFIX = os.getenv("COMPANY_API_PREFIX", "")    # npr. "/api" ili ""
+
+def _url(base, prefix, path):
+    # garantuj jedno / između segmenata
+    return f"{base.rstrip('/')}{prefix.rstrip('/')}{path}"
+
+def _get_json(url, params=None):
+    r = requests.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+# --- Employee service ---
+def list_employees():
+    # Ako FastAPI ima prefiks (npr. /api), postavi EMPLOYEE_API_PREFIX="/api"
+    return _get_json(_url(EMPLOYEE_BASE, EMPLOYEE_API_PREFIX, "/employees"))
+
+# --- Company reservation service ---
+def list_reservations():
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/reservations"))
+
+def list_payments():
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/payments"))
+
+def list_cancellations():
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/cancellations"))
+
+def list_locations():
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/locations"))
+
+def list_services():
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/services"))
 
 ================================================================================
 FILE: analytics-service\app\db.py
@@ -310,6 +435,8 @@ from app.routes import (
     payment,
     cancellation,
     analytics,
+    reports, 
+    alerts
 )
 
 app = FastAPI(
@@ -337,6 +464,8 @@ app.include_router(reservation.router)
 app.include_router(payment.router)
 app.include_router(cancellation.router)
 app.include_router(analytics.router)
+app.include_router(reports.router)
+app.include_router(alerts.router)
 
 @app.get("/openapi.yaml", response_class=PlainTextResponse, include_in_schema=False)
 def openapi_yaml():
@@ -358,12 +487,12 @@ from pydantic import BaseModel, Field, EmailStr
 
 # ---------- Users ----------
 class UserIn(BaseModel):
-    first_name: Optional[str] = Field(None, example="Ana")
-    last_name: Optional[str] = Field(None, example="Novak")
+    name: str = Field(..., example="Ana Novak")
     email: EmailStr = Field(..., example="ana@example.com")
 
 class UserOut(UserIn):
     id: int
+
 
 # ---------- Time Dimension ----------
 class TimeDimIn(BaseModel):
@@ -375,6 +504,7 @@ class TimeDimIn(BaseModel):
 class TimeDimOut(TimeDimIn):
     id: int
 
+
 # ---------- Employees ----------
 class EmployeeIn(BaseModel):
     name: str = Field(..., example="Marko Marković")
@@ -382,6 +512,7 @@ class EmployeeIn(BaseModel):
 
 class EmployeeOut(EmployeeIn):
     id: int
+
 
 # ---------- Locations ----------
 class LocationIn(BaseModel):
@@ -391,6 +522,7 @@ class LocationIn(BaseModel):
 class LocationOut(LocationIn):
     id: int
 
+
 # ---------- Services ----------
 class ServiceIn(BaseModel):
     name: str = Field(..., example="Haircut")
@@ -399,6 +531,7 @@ class ServiceIn(BaseModel):
 
 class ServiceOut(ServiceIn):
     id: int
+
 
 # ---------- Payments ----------
 class PaymentIn(BaseModel):
@@ -410,6 +543,7 @@ class PaymentIn(BaseModel):
 class PaymentOut(PaymentIn):
     id: int
 
+
 # ---------- Cancellations ----------
 class CancellationIn(BaseModel):
     reservation_id: int = Field(..., example=101)
@@ -418,6 +552,7 @@ class CancellationIn(BaseModel):
 
 class CancellationOut(CancellationIn):
     id: int
+
 
 # ---------- Reservations ----------
 class ReservationIn(BaseModel):
@@ -430,23 +565,45 @@ class ReservationIn(BaseModel):
 class ReservationOut(ReservationIn):
     id: int
 
+
 # ---------- Analytics DTOs (za /analytics/* rute) ----------
 class ReservationsPerMonthItem(BaseModel):
+    year: int = Field(..., example=2025)
     month: int = Field(..., ge=1, le=12, example=5)
-    count: int = Field(..., ge=0, example=42)
+    total: int = Field(..., ge=0, example=42)
 
 class RevenueByServiceItem(BaseModel):
+    service_id: int = Field(..., example=2)
     service_name: str = Field(..., example="Haircut")
-    total_revenue: float = Field(..., ge=0, example=199.95)
+    revenue: float = Field(..., ge=0, example=199.95)
 
 class ReservationsByLocationItem(BaseModel):
+    location_id: int = Field(..., example=1)
     location_name: str = Field(..., example="Center")
-    count: int = Field(..., ge=0, example=30)
+    total: int = Field(..., ge=0, example=30)
 
 class TopUserItem(BaseModel):
     user_id: int = Field(..., example=5)
-    user_email: EmailStr = Field(..., example="ana@example.com")
-    total_amount: float = Field(..., ge=0, example=349.50)
+    total_reservations: int = Field(..., ge=0, example=12)
+
+
+# ---------- Reports & Alerts (value-add u tvojoj bazi) ----------
+class ReportIn(BaseModel):
+    name: str = Field(..., example="Mesečni promet po uslugama")
+    query: dict = Field(..., example={"type": "revenue_by_service", "from": "2025-01-01", "to": "2025-01-31"})
+    schedule_cron: Optional[str] = Field(None, example="0 9 * * *")
+
+class ReportOut(ReportIn):
+    id: int
+
+class AlertIn(BaseModel):
+    name: str = Field(..., example="Pad rezervacija")
+    # alias ostavljen radi kompatibilnosti s .dict(by_alias=True) u rutama
+    condition: dict = Field(..., alias="condition", example={"type": "reservations_drop", "threshold": 20})
+    enabled: bool = Field(True, example=True)
+
+class AlertOut(AlertIn):
+    id: int
 
 ================================================================================
 FILE: analytics-service\app\openapi.yaml
@@ -476,6 +633,8 @@ tags:
   - name: payments
   - name: cancellations
   - name: analytics
+  - name: reports
+  - name: alerts
 
 paths:
   /:
@@ -632,7 +791,6 @@ paths:
         '204': { description: Obrisano }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  # (Ako koristiš i ove rutere, struktura je ista kao gore – CRUD)
   /services/:
     get:
       tags: [services]
@@ -942,6 +1100,138 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/TopUserItem' }
 
+  /reports/:
+    get:
+      tags: [reports]
+      summary: Lista sačuvanih izvještaja
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReportOut' }
+    post:
+      tags: [reports]
+      summary: Kreiraj izvještaj (definiciju)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportOut' }
+
+  /reports/{report_id}:
+    get:
+      tags: [reports]
+      summary: Dohvati izvještaj
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [reports]
+      summary: Ažuriraj izvještaj
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [reports]
+      summary: Obriši izvještaj
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /alerts/:
+    get:
+      tags: [alerts]
+      summary: Lista alarma
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertOut' }
+    post:
+      tags: [alerts]
+      summary: Kreiraj alarm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertIn' }
+      responses:
+        '201':
+          description: Kreirano
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertOut' }
+
+  /alerts/{alert_id}:
+    get:
+      tags: [alerts]
+      summary: Dohvati alarm
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [alerts]
+      summary: Ažuriraj alarm
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertIn' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertOut' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [alerts]
+      summary: Obriši alarm
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '204': { description: Obrisano }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   parameters:
     EmployeeId: { name: employee_id, in: path, required: true, schema: { type: integer } }
@@ -950,6 +1240,8 @@ components:
     ReservationId: { name: reservation_id, in: path, required: true, schema: { type: integer } }
     PaymentId: { name: payment_id, in: path, required: true, schema: { type: integer } }
     CancellationId: { name: cancellation_id, in: path, required: true, schema: { type: integer } }
+    ReportId: { name: report_id, in: path, required: true, schema: { type: integer } }
+    AlertId:  { name: alert_id,  in: path, required: true, schema: { type: integer } }
 
   responses:
     NotFound:
@@ -1108,81 +1400,239 @@ components:
         total_reservations: { type: integer }
       required: [user_id, total_reservations]
 
+    ReportIn:
+      type: object
+      properties:
+        name: { type: string, example: 'Mesečni promet po uslugama' }
+        query:
+          type: object
+          additionalProperties: true
+          example: { type: 'revenue_by_service', from: '2025-01-01', to: '2025-01-31' }
+        schedule_cron:
+          type: string
+          nullable: true
+          example: '0 9 * * *'
+      required: [name, query]
+
+    ReportOut:
+      allOf:
+        - $ref: '#/components/schemas/ReportIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
+    AlertIn:
+      type: object
+      properties:
+        name: { type: string, example: 'Pad rezervacija' }
+        condition:
+          type: object
+          additionalProperties: true
+          example: { type: 'reservations_drop', threshold: 20 }
+        enabled: { type: boolean, example: true }
+      required: [name, condition]
+
+    AlertOut:
+      allOf:
+        - $ref: '#/components/schemas/AlertIn'
+        - type: object
+          properties: { id: { type: integer } }
+          required: [id]
+
 ================================================================================
 FILE: analytics-service\app\routes\__init__.py
 ================================================================================
 
 
 ================================================================================
+FILE: analytics-service\app\routes\alerts.py
+================================================================================
+
+from fastapi import APIRouter, HTTPException
+from app.models import AlertIn, AlertOut
+import os, json, mysql.connector, mysql.connector.pooling
+
+router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+POOL = mysql.connector.pooling.MySQLConnectionPool(
+    pool_name="alt_pool",
+    pool_size=5,
+    host=os.getenv("DB_HOST","analytics-mysql"),
+    user=os.getenv("DB_USER","root"),
+    password=os.getenv("DB_PASSWORD","root"),
+    database=os.getenv("DB_NAME","reservation_service_db"),
+    autocommit=True,
+)
+
+def conn():
+    return POOL.get_connection()
+
+@router.get("/", response_model=list[AlertOut])
+def list_alerts():
+    with conn() as c:
+        cur = c.cursor(dictionary=True)
+        cur.execute("SELECT id, name, `condition`, enabled FROM alert ORDER BY id DESC")
+        rows = cur.fetchall()
+    for r in rows:
+        if isinstance(r["condition"], (bytes, bytearray, str)):
+            r["condition"] = json.loads(r["condition"])
+    return rows
+
+@router.get("/{alert_id}", response_model=AlertOut)
+def get_alert(alert_id: int):
+    with conn() as c:
+        cur = c.cursor(dictionary=True)
+        cur.execute("SELECT id, name, `condition`, enabled FROM alert WHERE id=%s", (alert_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Alert not found")
+    if isinstance(row["condition"], (bytes, bytearray, str)):
+        row["condition"] = json.loads(row["condition"])
+    return row
+
+@router.post("/", response_model=AlertOut, status_code=201)
+def create_alert(data: AlertIn):
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            "INSERT INTO alert (name, `condition`, enabled) VALUES (%s, CAST(%s AS JSON), %s)",
+            (data.name, json.dumps(data.condition), data.enabled),
+        )
+        new_id = cur.lastrowid
+    return {"id": new_id, **data.dict(by_alias=True)}
+
+@router.put("/{alert_id}", response_model=AlertOut)
+def update_alert(alert_id: int, data: AlertIn):
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute("SELECT 1 FROM alert WHERE id=%s", (alert_id,))
+        if not cur.fetchone():
+            raise HTTPException(404, "Alert not found")
+        cur.execute(
+            "UPDATE alert SET name=%s, `condition`=CAST(%s AS JSON), enabled=%s WHERE id=%s",
+            (data.name, json.dumps(data.condition), data.enabled, alert_id),
+        )
+    return {"id": alert_id, **data.dict(by_alias=True)}
+
+@router.delete("/{alert_id}", status_code=204)
+def delete_alert(alert_id: int):
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute("DELETE FROM alert WHERE id=%s", (alert_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Alert not found")
+    return None
+
+================================================================================
 FILE: analytics-service\app\routes\analytics.py
 ================================================================================
 
-from fastapi import APIRouter
-from app.db import get_db_connection
+from fastapi import APIRouter, HTTPException
 from app.models import (
-    ReservationsPerMonthItem,
-    RevenueByServiceItem,
-    ReservationsByLocationItem,
-    TopUserItem,
+    ReservationsPerMonthItem, RevenueByServiceItem,
+    ReservationsByLocationItem, TopUserItem,
 )
+from collections import defaultdict
+from datetime import datetime
+from app import clients
+import requests
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 @router.get("/reservations-per-month", response_model=list[ReservationsPerMonthItem])
 def reservations_per_month():
-    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT YEAR(date) AS year, MONTH(date) AS month, COUNT(*) AS total
-        FROM reservations
-        GROUP BY YEAR(date), MONTH(date)
-        ORDER BY YEAR(date), MONTH(date)
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return rows
+    try:
+        reservations = clients.list_reservations()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"company-reservation-service error: {e}")
+    buckets = defaultdict(int)
+    for r in reservations:
+        ds = r.get("date") or r.get("createdAt")
+        if not ds: 
+            continue
+        try:
+            d = datetime.fromisoformat(ds).date() if "T" in ds else datetime.strptime(ds, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        buckets[(d.year, d.month)] += 1
+    return [{"year": y, "month": m, "total": total} for (y, m), total in sorted(buckets.items())]
 
 @router.get("/revenue-by-service", response_model=list[RevenueByServiceItem])
 def revenue_by_service():
-    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT s.id AS service_id, s.name AS service_name, IFNULL(SUM(p.amount), 0) AS revenue
-        FROM services s
-        LEFT JOIN reservations r ON r.service_id = s.id
-        LEFT JOIN payments p ON p.reservation_id = r.id
-        GROUP BY s.id, s.name
-        ORDER BY revenue DESC
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return rows
+    try:
+        services = { s["id"]: s for s in clients.list_services() }
+        reservations = clients.list_reservations()
+        payments = clients.list_payments()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"upstream error: {e}")
+
+    paid_by_res = defaultdict(float)
+    for p in payments:
+        rid = p.get("reservation_id") or p.get("reservationId")
+        amt = float(p.get("amount") or 0)
+        if rid:
+            paid_by_res[rid] += amt
+
+    revenue_by_service_id = defaultdict(float)
+    for r in reservations:
+        rid = r.get("id")
+        sid = r.get("service_id") or r.get("serviceId")
+        if sid and rid in paid_by_res:
+            revenue_by_service_id[sid] += paid_by_res[rid]
+
+    out = []
+    for sid, revenue in revenue_by_service_id.items():
+        s = services.get(sid, {})
+        out.append({
+            "service_id": sid,
+            "service_name": s.get("name", f"service_{sid}"),
+            "revenue": round(revenue, 2),
+        })
+    out.sort(key=lambda x: x["revenue"], reverse=True)
+    return out
 
 @router.get("/reservations-by-location", response_model=list[ReservationsByLocationItem])
 def reservations_by_location():
-    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT l.id AS location_id, l.name AS location_name, COUNT(r.id) AS total
-        FROM locations l
-        LEFT JOIN reservations r ON r.location_id = l.id
-        GROUP BY l.id, l.name
-        ORDER BY total DESC
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return rows
+    try:
+        locations = { l["id"]: l for l in clients.list_locations() }
+        reservations = clients.list_reservations()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"upstream error: {e}")
+
+    counts = defaultdict(int)
+    for r in reservations:
+        lid = r.get("location_id") or r.get("locationId")
+        if lid:
+            counts[lid] += 1
+
+    out = []
+    for lid, total in counts.items():
+        loc = locations.get(lid, {})
+        out.append({
+            "location_id": lid,
+            "location_name": loc.get("name", f"location_{lid}"),
+            "total": total
+        })
+    out.sort(key=lambda x: x["total"], reverse=True)
+    return out
 
 @router.get("/top-users", response_model=list[TopUserItem])
 def top_users():
-    conn = get_db_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT user_id, COUNT(*) AS total_reservations
-        FROM reservations
-        GROUP BY user_id
-        ORDER BY total_reservations DESC
-        LIMIT 10
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return rows
+    # users možeš čitati i iz tvog lokalnog CRUD-a, ali za dosljednost:
+    try:
+        reservations = clients.list_reservations()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"company-reservation-service error: {e}")
+
+    by_user = defaultdict(int)
+    for r in reservations:
+        uid = r.get("user_id") or r.get("userId")
+        if uid:
+            by_user[int(uid)] += 1
+
+    out = [{"user_id": uid, "total_reservations": total} for uid, total in by_user.items()]
+    out.sort(key=lambda x: x["total_reservations"], reverse=True)
+    return out
 
 ================================================================================
 FILE: analytics-service\app\routes\cancellation.py
@@ -1460,6 +1910,86 @@ def delete_payment(payment_id: int):
         raise HTTPException(status_code=404, detail="Payment not found")
     cur.execute("DELETE FROM payments WHERE id=%s", (payment_id,))
     conn.commit(); cur.close(); conn.close()
+    return None
+
+================================================================================
+FILE: analytics-service\app\routes\reports.py
+================================================================================
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from app.models import ReportIn, ReportOut
+import os, json, mysql.connector, mysql.connector.pooling
+
+router = APIRouter(prefix="/reports", tags=["reports"])
+
+POOL = mysql.connector.pooling.MySQLConnectionPool(
+    pool_name="rep_pool",
+    pool_size=5,
+    host=os.getenv("DB_HOST","analytics-mysql"),
+    user=os.getenv("DB_USER","root"),
+    password=os.getenv("DB_PASSWORD","root"),
+    database=os.getenv("DB_NAME","reservation_service_db"),
+    autocommit=True,
+)
+
+def conn():
+    return POOL.get_connection()
+
+@router.get("/", response_model=list[ReportOut])
+def list_reports():
+    with conn() as c:
+        cur = c.cursor(dictionary=True)
+        cur.execute("SELECT id, name, query, schedule_cron FROM report ORDER BY id DESC")
+        rows = cur.fetchall()
+    for r in rows:
+        if isinstance(r["query"], (bytes, bytearray, str)):
+            r["query"] = json.loads(r["query"])
+    return rows
+
+@router.get("/{report_id}", response_model=ReportOut)
+def get_report(report_id: int):
+    with conn() as c:
+        cur = c.cursor(dictionary=True)
+        cur.execute("SELECT id, name, query, schedule_cron FROM report WHERE id=%s", (report_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Report not found")
+    if isinstance(row["query"], (bytes, bytearray, str)):
+        row["query"] = json.loads(row["query"])
+    return row
+
+@router.post("/", response_model=ReportOut, status_code=201)
+def create_report(data: ReportIn):
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            "INSERT INTO report (name, query, schedule_cron) VALUES (%s, CAST(%s AS JSON), %s)",
+            (data.name, json.dumps(data.query), data.schedule_cron),
+        )
+        new_id = cur.lastrowid
+    return {"id": new_id, **data.dict()}
+
+@router.put("/{report_id}", response_model=ReportOut)
+def update_report(report_id: int, data: ReportIn):
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute("SELECT 1 FROM report WHERE id=%s", (report_id,))
+        if not cur.fetchone():
+            raise HTTPException(404, "Report not found")
+        cur.execute(
+            "UPDATE report SET name=%s, query=CAST(%s AS JSON), schedule_cron=%s WHERE id=%s",
+            (data.name, json.dumps(data.query), data.schedule_cron, report_id),
+        )
+    return {"id": report_id, **data.dict()}
+
+@router.delete("/{report_id}", status_code=204)
+def delete_report(report_id: int):
+    with conn() as c:
+        cur = c.cursor()
+        cur.execute("DELETE FROM report WHERE id=%s", (report_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Report not found")
     return None
 
 ================================================================================
@@ -1790,6 +2320,24 @@ CREATE TABLE IF NOT EXISTS cancellations (
   reason VARCHAR(255),
   cancelled_at DATETIME NOT NULL,
   FOREIGN KEY (reservation_id) REFERENCES reservations(id)
+);
+
+-- REPORTS
+CREATE TABLE IF NOT EXISTS report (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  query JSON NOT NULL,             
+  schedule_cron VARCHAR(64) NULL,   
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ALERTS
+CREATE TABLE IF NOT EXISTS alert (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  `condition` JSON NOT NULL,        
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 ================================================================================
@@ -3854,6 +4402,2007 @@ components:
             properties:
               email: { type: string, format: email }
               displayName: { type: string }
+
+================================================================================
+FILE: company-reservation-service\company-reservation-service\.gitignore
+================================================================================
+
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+docker-compose.yml
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+/src/main/java/org/soa/FileContentExporter.java
+/output.txt
+/.env.company
+/set-env.ps1
+/reservation_service.txt
+/companyService.txt
+
+================================================================================
+FILE: company-reservation-service\company-reservation-service\Dockerfile
+================================================================================
+
+# syntax=docker/dockerfile:1
+
+FROM maven:3.9.6-eclipse-temurin-21-alpine AS build
+WORKDIR /build
+COPY pom.xml ./
+COPY .mvn/ .mvn/
+COPY mvnw ./
+RUN chmod +x mvnw && ./mvnw -q -B -DskipTests dependency:go-offline
+COPY src ./src
+RUN ./mvnw -q -B -DskipTests package spring-boot:repackage
+
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /build/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java","-jar","/app/app.jar"]
+
+================================================================================
+FILE: company-reservation-service\company-reservation-service\db.sql
+================================================================================
+
+
+CREATE TABLE payment_types (
+                               id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                               name TEXT NOT NULL,
+                               duration_from TIMESTAMP NOT NULL,
+                               duration_to TIMESTAMP,
+                               added_by BIGINT NOT NULL,
+                               deleted_by BIGINT
+);
+
+CREATE TABLE scheduled_notifications (
+                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                         id_notification_type BIGINT NOT NULL,
+                         scheduled_time TIMESTAMP,
+                         id_reservation BIGINT NOT NULL
+);
+
+CREATE TABLE status (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        added_by BIGINT NOT NULL
+);
+
+
+CREATE TABLE payment (
+                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                         payment_type_id BIGINT NOT NULL,
+                         status TEXT NOT NULL,
+                         date_paid TIMESTAMP,
+                         amount DECIMAL(10, 2) NOT NULL,
+                         FOREIGN KEY (payment_type_id) REFERENCES payment_types(id)
+);
+
+
+CREATE TABLE reservation (
+                             id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                             date TIMESTAMP NOT NULL,
+                             id_company BIGINT NOT NULL,
+                             id_service BIGINT NOT NULL,
+                             id_customer INT NOT NULL,
+                             send_sms TIMESTAMP,
+                             notified BOOLEAN,
+                             `2FA_code` BIGINT,
+                             hidden BOOLEAN DEFAULT FALSE,
+                             customer_email VARCHAR(255),
+                             customer_phone_number BIGINT,
+                             customer_full_name VARCHAR(255),
+                             status_id BIGINT,
+                             payment_id BIGINT,
+                             id_employee bigint,
+                             FOREIGN KEY (status_id) REFERENCES status(id),
+                             FOREIGN KEY (payment_id) REFERENCES payment(id)
+);
+
+-- Table: company
+CREATE TABLE company (
+                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                         description TEXT,
+                         id_sms_notification BIGINT,
+                         id_picture TEXT,
+                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                         id_auth_user VARCHAR(255),
+                         uuid_url VARCHAR(255),
+                         address VARCHAR(255),
+                         phone_number VARCHAR(20),
+                         email VARCHAR(255),
+                         first_name VARCHAR(255),
+                         last_name VARCHAR(255),
+                         company_name VARCHAR(255),
+                         id_location_counrty BIGINT
+);
+
+-- Table: location
+CREATE TABLE location (
+                          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                          street VARCHAR(255),
+                          number VARCHAR(255),
+                          id_location BIGINT
+);
+
+-- Table: services
+CREATE TABLE services (
+                          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                          id_category BIGINT,
+                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                          id_company BIGINT,
+                          name VARCHAR(255),
+                          description TEXT,
+                          price FLOAT,
+                          id_picture TEXT,
+                          duration SMALLINT,
+						  id_location BIGINT
+);
+
+-- Table: service_categories
+CREATE TABLE service_categories (
+                                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                    name VARCHAR(255),
+                                    id_company BIGINT,
+									id_location BIGINT
+);
+
+-- Table: business_hours
+CREATE TABLE business_hours (
+                                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                                day_number INT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                time_from TIME,
+                                time_to TIME,
+                                pause_to TIME,
+                                pause_from TIME,
+                                id_company BIGINT,
+                                id_location BIGINT,
+                                day VARCHAR(50)
+);
+
+-- Table: sms_notification_config
+CREATE TABLE sms_notification_config (
+                                         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                         name VARCHAR(255)
+);
+
+            
+================================================================================
+FILE: company-reservation-service\company-reservation-service\docker-compose.yml
+================================================================================
+
+version: '3.8'
+
+services:
+  company-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker.io/pajovicv/companyandreservationservices:latest
+    container_name: company-service
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    env_file:
+      - .env.company
+    environment:
+      # Database
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://db-mysql-fra1-44936-do-user-18276591-0.k.db.ondigitalocean.com:25060/comapny_reservation}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-doadmin}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-AVNS_-FxVjWsPbwWMkUsHlYf}
+
+      # MinIO
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-K41A0IFt0sD40gBdu6Dt}
+      MINIO_SECRETE_KEY: ${MINIO_SECRETE_KEY:-kyIM7eAyzhVjpNecnOa2A9uxMYA8no2C1troecAx}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://194.28.111.15:9001/}
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET:-public}
+
+      # SMS / Notifications
+      SMS_API_KEY: ${SMS_API_KEY:-futuretech:DEdo2fcfW2}
+      SMS_FAAS_GRAPHQL_URL: ${SMS_FAAS_GRAPHQL_URL:-https://employee-company-faas.vercel.app/api/graphql}
+      SMS_SENDER_ID: ${SMS_SENDER_ID:-SomeSenderId}
+      SMS_DEFAULT_PHONE: ${SMS_DEFAULT_PHONE:-+38640111222}
+      CUSTOMER_FALLBACK_ID: ${CUSTOMER_FALLBACK_ID:-0}
+
+      # Employee service
+      EMPLOYEE_SERVICE_URL: ${EMPLOYEE_SERVICE_URL:-http://employee-svc:8000}
+      EMPLOYEE_SERVICE_TOKEN: ${EMPLOYEE_SERVICE_TOKEN:-}
+
+      # Other services
+      ADMIN_SERVICE_URL: ${ADMIN_SERVICE_URL:-http://admin-service:7001}
+      DISCOUNT_SERVICE_URL: ${DISCOUNT_SERVICE_URL:-}
+      USER_SERVICE_URL: ${USER_SERVICE_URL:-http://user-service:3000/api}
+      ANALYTICS_SERVICE_URL: ${ANALYTICS_SERVICE_URL:-http://analytics-service:8000}
+
+      # extra logging
+      SERVER_ERROR_INCLUDE_MESSAGE: "always"
+      SERVER_ERROR_INCLUDE_STACKTRACE: "ALWAYS"
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB_SERVLET_MVC_METHOD_ANNOTATION_REQUESTMAPPINGHANDLERMAPPING: DEBUG
+      SPRING_MVC_LOG_REQUEST_DETAILS: "true"
+
+    networks:
+      - soa-net
+
+networks:
+  soa-net:
+    external: true
+    name: soa-net
+
+================================================================================
+FILE: employee-service\employee-service\.gitignore
+================================================================================
+
+/copy_files.py
+/output.txt
+/photo.jpg
+/.env
+/.venv
+
+
+================================================================================
+FILE: employee-service\employee-service\Dockerfile
+================================================================================
+
+# Stage 1: build wheels
+FROM python:3.11-alpine AS builder
+
+# build dependencies (including Rust toolchain, OpenSSL and libffi headers)
+RUN apk add --no-cache \
+      build-base \
+      libffi-dev \
+      openssl-dev \
+      pkgconfig \
+      rust \
+      cargo
+
+WORKDIR /app
+
+# copy and build all wheels into /wheels
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
+# Stage 2: runtime
+FROM python:3.11-alpine
+
+# runtime dependencies for cryptography and other C-extensions
+RUN apk add --no-cache \
+      libstdc++ \
+      libffi \
+      openssl
+
+WORKDIR /app
+
+# bring in wheels and requirements
+COPY --from=builder /wheels /wheels
+COPY requirements.txt .
+
+# install from wheels only
+RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt
+
+# copy application code
+COPY . .
+
+# expose your port
+EXPOSE 8000
+
+# start the FastAPI app
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+================================================================================
+FILE: employee-service\employee-service\docker-compose.override.yml
+================================================================================
+
+# employee-service/docker-compose.override.yml
+services:
+  employee-service:                # ako u njihovom compose-u servis ima DRUGO ime, stavi GA OVDJE
+    container_name: employee-service
+    networks:
+      - soa-net
+
+networks:
+  soa-net:
+    external: true
+
+================================================================================
+FILE: employee-service\employee-service\docker-compose.yml
+================================================================================
+
+services:
+  employee-db:
+    image: mysql:8.0
+    container_name: employee-db
+    ports:
+      - "3307:3306"
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: employee_db
+      MYSQL_USER: employee_user
+      MYSQL_PASSWORD: employeepass
+    volumes:
+      - employee-db-data:/var/lib/mysql
+    networks:
+      - soa-net
+
+  employee-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker.io/pajovicv/employee-service:latest
+    container_name: employee-svc
+    depends_on:
+      - employee-db
+    ports:
+      - "8010:8000"   # changed host port to avoid conflict
+    volumes:
+      - ./storage:/storage
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://employee_user:employeepass@employee-db:3306/employee_db}
+      STORAGE_PATH: ${STORAGE_PATH:-./storage}
+      COMPANY_SERVICE_URL: ${COMPANY_SERVICE_URL:-http://company-service:8082/api}
+      COMPANY_HTTP_CONNECT_TIMEOUT: ${COMPANY_HTTP_CONNECT_TIMEOUT:-2.0}
+      COMPANY_HTTP_READ_TIMEOUT: ${COMPANY_HTTP_READ_TIMEOUT:-2.0}
+      COMPANY_VALIDATION_STRICT: ${COMPANY_VALIDATION_STRICT:-false}
+      COMPANY_VALIDATION_ENABLED: ${COMPANY_VALIDATION_ENABLED:-true}
+      # Note: default includes /api; the client also handles when it's missing
+      FAAS_BASE_URL: ${FAAS_BASE_URL:-https://employee-utils-faas.onrender.com}
+      FAAS_ENABLED: ${FAAS_ENABLED:-true}
+      FAAS_CONNECT_TIMEOUT: ${FAAS_CONNECT_TIMEOUT:-2.0}
+      FAAS_READ_TIMEOUT: ${FAAS_READ_TIMEOUT:-2.0}
+      FAAS_AUDIT_ENABLED: ${FAAS_AUDIT_ENABLED:-true}
+      FAAS_AUDIT_SERVICE: ${FAAS_AUDIT_SERVICE:-employee-service}
+    networks:
+      - soa-net
+
+volumes:
+  employee-db-data:
+
+networks:
+  soa-net:
+    external: true
+    name: soa-net
+
+================================================================================
+FILE: employee-service\employee-service\main.py
+================================================================================
+
+# This is a sample Python script.
+
+# Press Shift+F10 to execute it or replace it with your code.
+# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+
+
+def print_hi(name):
+    # Use a breakpoint in the code line below to debug your script.
+    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+
+
+# Press the green button in the gutter to run the script.
+if __name__ == '__main__':
+    print_hi('PyCharm')
+
+# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+================================================================================
+FILE: employee-service\employee-service\requirements.txt
+================================================================================
+
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic[email]
+python-multipart
+python-dotenv
+minio
+pymysql
+httpx
+pytest
+pytest-asyncio
+Pillow
+cryptography
+
+================================================================================
+FILE: employee-service\employee-service\schema.sql
+================================================================================
+
+-- schema.sql
+CREATE DATABASE IF NOT EXISTS employee_db;
+USE employee_db;
+
+-- Employee now includes optional company_id and location_id (home branch).
+CREATE TABLE IF NOT EXISTS employee (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  idp_id VARCHAR(255),
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  gender BOOLEAN NOT NULL,
+  birth_date DATETIME NOT NULL,
+  id_picture VARCHAR(255),
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  company_id BIGINT NULL,
+  location_id BIGINT NULL
+);
+
+CREATE TABLE IF NOT EXISTS availability_slots (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  employee_id BIGINT NOT NULL,
+  day_of_week INT NOT NULL,
+  time_from TIME NOT NULL,
+  time_to TIME NOT NULL,
+  location_id BIGINT,
+  FOREIGN KEY (employee_id) REFERENCES employee(id)
+);
+
+CREATE TABLE IF NOT EXISTS employee_skills (
+  employee_id BIGINT NOT NULL,
+  service_id BIGINT NOT NULL,
+  PRIMARY KEY (employee_id, service_id),
+  FOREIGN KEY (employee_id) REFERENCES employee(id)
+);
+
+-- If you already had the old table, and need to migrate, run once:
+-- ALTER TABLE employee ADD COLUMN company_id BIGINT NULL;
+-- ALTER TABLE employee ADD COLUMN location_id BIGINT NULL;
+
+================================================================================
+FILE: employee-service\employee-service\app\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: employee-service\employee-service\app\crud.py
+================================================================================
+
+from sqlalchemy.orm import Session
+from typing import List
+from app import models, schemas
+
+# Employee
+def get_employee(db: Session, employee_id: int):
+    return db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+
+def get_employees(db: Session, skip: int = 0, limit: int = 100):
+    return (
+        db.query(models.Employee)
+        .filter(models.Employee.active == True)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def create_employee(db: Session, emp: schemas.EmployeeCreate):
+    # pydantic v2: model_dump()
+    db_emp = models.Employee(**emp.model_dump())
+    db.add(db_emp)
+    db.commit()
+    db.refresh(db_emp)
+    return db_emp
+
+def update_employee(db: Session, employee_id: int, emp: schemas.EmployeeUpdate):
+    db_emp = get_employee(db, employee_id)
+    if not db_emp:
+        return None
+    for field, value in emp.model_dump().items():
+        setattr(db_emp, field, value)
+    db.commit()
+    db.refresh(db_emp)
+    return db_emp
+
+def soft_delete_employee(db: Session, employee_id: int):
+    db_emp = get_employee(db, employee_id)
+    if db_emp:
+        db_emp.active = False
+        db.commit()
+    return db_emp
+
+# Availability
+def get_availability(db: Session, employee_id: int):
+    return db.query(models.AvailabilitySlot).filter(models.AvailabilitySlot.employee_id == employee_id).all()
+
+def create_availability(db: Session, employee_id: int, slots: List[schemas.AvailabilitySlotCreate]):
+    objs = []
+    for slot in slots:
+        obj = models.AvailabilitySlot(employee_id=employee_id, **slot.model_dump())
+        db.add(obj)
+        objs.append(obj)
+    db.commit()
+    return objs
+
+def delete_availability_slot(db: Session, slot_id: int):
+    obj = db.query(models.AvailabilitySlot).filter(models.AvailabilitySlot.id == slot_id).first()
+    if obj:
+        db.delete(obj)
+        db.commit()
+    return obj
+
+# Skills
+def get_skills(db: Session, employee_id: int):
+    return db.query(models.EmployeeSkill).filter(models.EmployeeSkill.employee_id == employee_id).all()
+
+def replace_skills(db: Session, employee_id: int, service_ids: List[int]):
+    db.query(models.EmployeeSkill).filter(models.EmployeeSkill.employee_id == employee_id).delete()
+    for sid in service_ids:
+        db.add(models.EmployeeSkill(employee_id=employee_id, service_id=sid))
+    db.commit()
+    return get_skills(db, employee_id)
+
+================================================================================
+FILE: employee-service\employee-service\app\database.py
+================================================================================
+
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base()
+
+================================================================================
+FILE: employee-service\employee-service\app\dependencies.py
+================================================================================
+
+from app.database import SessionLocal
+from fastapi import Depends, HTTPException
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+================================================================================
+FILE: employee-service\employee-service\app\main.py
+================================================================================
+
+import os
+import time
+from typing import Tuple
+from dotenv import load_dotenv
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
+
+# load .env
+load_dotenv()
+
+from app.database import engine, Base
+from contextlib import asynccontextmanager
+import app.models  # noqa: ensure models are registered
+
+# routers
+from app.routers import employees, availability, skills
+from app.schemas import Problem
+
+OPENAPI_TAGS = [
+    {"name": "employees", "description": "Employee CRUD."},
+    {"name": "availability", "description": "Per-employee weekly availability slots."},
+    {"name": "skills", "description": "Per-employee service skills."},
+    {"name": "health", "description": "Service health & readiness."},
+]
+
+app = FastAPI(
+    title="Employee Service",
+    description=(
+        "Manages employees, availability slots and skills.\n\n"
+        "Authentication & authorization are handled by the API Gateway. "
+        "This service validates optional company/location/service data via Company Service when configured."
+    ),
+    version="1.4.0",
+    openapi_tags=OPENAPI_TAGS,
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# serve everything under STORAGE_PATH as /files (kept; independent of thumbnail logic)
+app.mount(
+    "/files",
+    StaticFiles(directory=os.getenv("STORAGE_PATH", "storage")),
+    name="files",
+)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    for _ in range(10):
+        try:
+            with engine.connect():
+                break
+        except OperationalError:
+            time.sleep(2)
+    Base.metadata.create_all(bind=engine)
+    yield  # Application runs here
+
+@app.get("/health", tags=["health"], summary="Health check", responses={
+    200: {
+        "description": "Service is healthy",
+        "content": {"application/json": {"example": {"status": "ok"}}}
+    }
+})
+def health():
+    return {"status": "ok"}
+
+# ───────────────────── Global exception mappers ─────────────────────
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    problem = Problem(
+        title="Internal Server Error",
+        status=500,
+        detail=str(exc) if os.getenv("ENV", "dev") == "dev" else "Unexpected error",
+        instance=request.url.path
+    )
+    return JSONResponse(status_code=500, content=problem.model_dump())
+
+from fastapi import HTTPException
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    problem = Problem(
+        title=exc.detail if isinstance(exc.detail, str) else "HTTP Error",
+        status=exc.status_code,
+        instance=request.url.path
+    )
+    return JSONResponse(status_code=exc.status_code, content=problem.model_dump())
+
+# ─────────────────────────── REST routers ───────────────────────────
+
+app.include_router(employees.router, prefix="/employees", tags=["employees"])
+app.include_router(availability.router, prefix="/employees/{employee_id}/availability", tags=["availability"])
+app.include_router(skills.router, prefix="/employees/{employee_id}/skills", tags=["skills"])
+
+================================================================================
+FILE: employee-service\employee-service\app\models.py
+================================================================================
+
+# app/models.py
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Time, ForeignKey
+from sqlalchemy.orm import relationship
+from app.database import Base
+
+class Employee(Base):
+    __tablename__ = "employee"
+
+    id = Column(Integer, primary_key=True, index=True)
+    idp_id = Column(String(255), unique=True, nullable=True)
+    first_name = Column(String(255), nullable=False)
+    last_name = Column(String(255), nullable=False)
+    gender = Column(Boolean, nullable=False)
+    birth_date = Column(DateTime, nullable=False)
+    id_picture = Column(String(255), nullable=True)
+    active = Column(Boolean, default=True, nullable=False)
+
+    # ─── Integration fields ──────────────────────────────────────────────────
+    company_id = Column(Integer, nullable=True)      # FK to Company (remote)
+    location_id = Column(Integer, nullable=True)     # home branch (remote)
+
+    availability = relationship(
+        "AvailabilitySlot",
+        back_populates="employee",
+        cascade="all, delete-orphan",
+    )
+    skills = relationship(
+        "EmployeeSkill",
+        back_populates="employee",
+        cascade="all, delete-orphan",
+    )
+
+class AvailabilitySlot(Base):
+    __tablename__ = "availability_slots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employee.id"), nullable=False)
+    day_of_week = Column(Integer, nullable=False)
+    time_from = Column(Time, nullable=False)
+    time_to = Column(Time, nullable=False)
+    location_id = Column(Integer, nullable=True)  # Location from Company svc
+
+    employee = relationship("Employee", back_populates="availability")
+
+class EmployeeSkill(Base):
+    __tablename__ = "employee_skills"
+
+    employee_id = Column(Integer, ForeignKey("employee.id"), primary_key=True)
+    service_id = Column(Integer, primary_key=True)  # ServiceM.id from Company svc
+
+    employee = relationship("Employee", back_populates="skills")
+
+================================================================================
+FILE: employee-service\employee-service\app\schemas.py
+================================================================================
+
+from datetime import date, time
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, constr, ConfigDict
+
+# ───────────────────────── Common error schema ─────────────────────────
+
+class Problem(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "type": "about:blank",
+            "title": "Not Found",
+            "status": 404,
+            "detail": "Employee not found",
+            "instance": "/employees/999"
+        }
+    })
+    type: Optional[str] = "about:blank"
+    title: str
+    status: int
+    detail: Optional[str] = None
+    instance: Optional[str] = None
+    extra: Optional[Dict[str, Any]] = None
+
+# ───────────────────────── Inter-service read models ───────────────────
+
+class CompanyRef(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "id": 1, "name": "Barber Shop", "email": "info@barber.si", "phone": "+38640111222"
+    }})
+    id: int
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+class LocationRef(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "id": 12, "street": "Trg Leona", "number": "3", "parentLocationId": 1
+    }})
+    id: int
+    street: Optional[str] = None
+    number: Optional[str] = None
+    parentLocationId: Optional[int] = None
+
+class BusinessHoursDay(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "dayNumber": 1, "day": "MONDAY", "fromTime": "09:00:00", "toTime": "17:00:00",
+        "pauseFrom": "12:00:00", "pauseTo": "12:30:00"
+    }})
+    dayNumber: int
+    day: str
+    fromTime: str
+    toTime: str
+    pauseFrom: Optional[str] = None
+    pauseTo: Optional[str] = None
+
+class EmployeeContextOut(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "employeeId": 7,
+        "company": {"id": 1, "name": "Barber Shop"},
+        "location": {"id": 12, "street": "Trg Leona", "number": "3"},
+        "businessHours": [
+            {"dayNumber": 1, "day": "MONDAY", "fromTime": "09:00:00", "toTime": "17:00:00"}
+        ]
+    }})
+    employeeId: int
+    company: Optional[CompanyRef] = None
+    location: Optional[LocationRef] = None
+    businessHours: Optional[List[BusinessHoursDay]] = None
+
+# ───────────────────────── Availability ─────────────────────────
+
+class AvailabilitySlotBase(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "day_of_week": 1,
+            "time_from": "09:00:00",
+            "time_to": "17:00:00",
+            "location_id": 3
+        }
+    })
+    day_of_week: int
+    time_from: time
+    time_to: time
+    location_id: Optional[int] = None
+
+class AvailabilitySlotCreate(AvailabilitySlotBase):
+    pass
+
+class AvailabilitySlotOut(AvailabilitySlotBase):
+    model_config = ConfigDict(from_attributes=True, json_schema_extra={
+        "example": {
+            "id": 42,
+            "day_of_week": 1,
+            "time_from": "09:00:00",
+            "time_to": "17:00:00",
+            "location_id": 3
+        }
+    })
+    id: int
+
+# ───────────────────────── Skills ─────────────────────────
+
+class EmployeeSkillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, json_schema_extra={
+        "example": {"service_id": 7}
+    })
+    service_id: int
+
+# ───────────────────────── Employee ─────────────────────────
+
+class EmployeeBase(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "idp_id": "auth0|abc123",
+            "first_name": "John",
+            "last_name": "Doe",
+            "gender": True,
+            "birth_date": "1990-01-01",
+            "id_picture": "/files/originals/1.jpg",
+            "company_id": 1,
+            "location_id": 12
+        }
+    })
+    idp_id: Optional[str] = None
+    first_name: constr(min_length=1)
+    last_name: constr(min_length=1)
+    gender: bool
+    birth_date: date
+    id_picture: Optional[str] = None
+
+    # Integration fields (optional to keep backward compatibility)
+    company_id: Optional[int] = None
+    location_id: Optional[int] = None
+
+class EmployeeCreate(EmployeeBase):
+    pass
+
+class EmployeeUpdate(EmployeeBase):
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "idp_id": None,
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "gender": False,
+            "birth_date": "1992-02-02",
+            "id_picture": None,
+            "active": True,
+            "company_id": 1,
+            "location_id": 12
+        }
+    })
+    active: bool
+
+class EmployeeOut(EmployeeBase):
+    model_config = ConfigDict(from_attributes=True, json_schema_extra={
+        "example": {
+            "id": 1,
+            "idp_id": "auth0|abc123",
+            "first_name": "John",
+            "last_name": "Doe",
+            "gender": True,
+            "birth_date": "1990-01-01",
+            "id_picture": "/files/originals/1.jpg",
+            "active": True,
+            "company_id": 1,
+            "location_id": 12,
+            "availability": [
+                {
+                    "id": 10,
+                    "day_of_week": 1,
+                    "time_from": "09:00:00",
+                    "time_to": "17:00:00",
+                    "location_id": 3
+                }
+            ],
+            "skills": [{"service_id": 7}]
+        }
+    })
+    id: int
+    active: bool
+    availability: List[AvailabilitySlotOut] = []
+    skills: List[EmployeeSkillOut] = []
+
+# ───────────────────────── Inter-service DTO (reservation) ─────────────
+
+class Reservation(BaseModel):
+    model_config = ConfigDict(from_attributes=True, json_schema_extra={
+        "example": {
+            "id": 555,
+            "employee_id": 1,
+            "date": "2025-01-01",
+            "time_from": "09:00:00",
+            "time_to": "10:00:00"
+        }
+    })
+    id: int
+    employee_id: int
+    date: date
+    time_from: time
+    time_to: time
+
+================================================================================
+FILE: employee-service\employee-service\app\routers\availability.py
+================================================================================
+
+from datetime import time as dtime
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Body
+from sqlalchemy.orm import Session
+from typing import List, Set
+
+from app import crud, schemas, models
+from app.dependencies import get_db
+from app.services.company_client import CompanyServiceClient
+from app.services.faas_client import FaaSClient
+
+router = APIRouter()
+
+
+def _overlaps(a_from: dtime, a_to: dtime, b_from: dtime, b_to: dtime) -> bool:
+    """
+    Returns True iff [a_from, a_to) overlaps [b_from, b_to).
+    Touching at the boundary (e.g. 12:00-13:00 and 13:00-14:00) is allowed.
+    """
+    return a_from < b_to and a_to > b_from
+
+
+def _validate_no_overlaps(db: Session, employee_id: int, slots: List[schemas.AvailabilitySlotCreate]) -> None:
+    """
+    Raises HTTPException(400) if any incoming slot:
+      - has invalid time range (time_from >= time_to), or
+      - overlaps with another incoming slot on the same day, or
+      - overlaps with an already saved slot for this employee on the same day.
+    """
+    if not slots:
+        return
+
+    # Basic per-slot sanity
+    for s in slots:
+        if s.time_from >= s.time_to:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid time range: {s.time_from} .. {s.time_to} (time_from must be < time_to)"
+            )
+
+    # Load existing only for the days we are touching
+    days_touched: Set[int] = {int(s.day_of_week) for s in slots}
+    existing: List[models.AvailabilitySlot] = (
+        db.query(models.AvailabilitySlot)
+        .filter(
+            models.AvailabilitySlot.employee_id == employee_id,
+            models.AvailabilitySlot.day_of_week.in_(days_touched),
+        )
+        .all()
+    )
+
+    # Check incoming vs existing
+    existing_by_day = {}
+    for e in existing:
+        existing_by_day.setdefault(int(e.day_of_week), []).append(e)
+
+    for s in slots:
+        for e in existing_by_day.get(int(s.day_of_week), []):
+            if _overlaps(s.time_from, s.time_to, e.time_from, e.time_to):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Overlapping with existing slot: "
+                        f"day={s.day_of_week} new={s.time_from}-{s.time_to} "
+                        f"existing(id={e.id})={e.time_from}-{e.time_to}"
+                    ),
+                )
+
+    # Check incoming vs incoming (within the same request)
+    seen_by_day = {}
+    for s in slots:
+        day = int(s.day_of_week)
+        for prev in seen_by_day.get(day, []):
+            if _overlaps(s.time_from, s.time_to, prev.time_from, prev.time_to):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Overlapping slots in request payload: "
+                        f"day={day} {prev.time_from}-{prev.time_to} vs {s.time_from}-{s.time_to}"
+                    ),
+                )
+        seen_by_day.setdefault(day, []).append(s)
+
+
+@router.get(
+    "/",
+    response_model=List[schemas.AvailabilitySlotOut],
+    summary="List availability slots",
+    responses={
+        200: {"description": "Availability slots for employee"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def list_availability(
+    employee_id: int = Path(..., description="Employee ID"),
+    db: Session = Depends(get_db)
+):
+    if not crud.get_employee(db, employee_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return crud.get_availability(db, employee_id)
+
+
+@router.post(
+    "/",
+    response_model=List[schemas.AvailabilitySlotOut],
+    summary="Add availability slots",
+    responses={
+        200: {"description": "Slots created"},
+        400: {"model": schemas.Problem, "description": "Validation error"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def add_availability(
+    employee_id: int = Path(..., description="Employee ID"),
+    slots: List[schemas.AvailabilitySlotCreate] = Body(
+        ...,
+        description="One or more weekly availability slots",
+        examples={
+            "twoSlots": {
+                "summary": "Two slots in one request",
+                "value": [
+                    {"day_of_week": 1, "time_from": "09:00:00", "time_to": "12:00:00", "location_id": 3},
+                    {"day_of_week": 3, "time_from": "13:00:00", "time_to": "17:00:00", "location_id": 3}
+                ],
+            }
+        },
+    ),
+    db: Session = Depends(get_db),
+):
+    if not crud.get_employee(db, employee_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    # Always enforce no-overlap server-side (independent of FAAS).
+    _validate_no_overlaps(db, employee_id, slots)
+
+    # Validate locations if Company service is configured
+    c = CompanyServiceClient()
+    if c.enabled():
+        loc_ids: Set[int] = {int(s.location_id) for s in slots if s.location_id is not None}
+        for lid in loc_ids:
+            if not c.validate_location(lid):
+                raise HTTPException(status_code=400, detail=f"location_id {lid} not found")
+
+    # Optional: pre-validate with FAAS (overlaps + business-hours bounds)
+    # (We still keep FAAS for out-of-business-hours detection etc.,
+    # but overlap is now already enforced locally.)
+    faas = FaaSClient()
+    if faas.enabled():
+        emp = crud.get_employee(db, employee_id)
+        bh = None
+        if c.enabled() and emp and emp.company_id:
+            # Company service BH keys may be timeFrom/timeTo; client adapts either.
+            bh = c.get_business_hours_by_company(emp.company_id)
+
+        check = faas.availability_check(
+            slots=[s.model_dump() for s in slots],
+            business_hours=bh
+        )
+        if not check.get("ok", True):
+            overlaps = check.get("overlaps", [])
+            oob = check.get("outOfBounds", [])
+            raise HTTPException(
+                status_code=400,
+                detail=f"availability validation failed: overlaps={len(overlaps)}, outOfBounds={len(oob)}"
+            )
+
+    created = crud.create_availability(db, employee_id, slots)
+
+    # Best-effort audit
+    faas.audit("availability.created", entity_id=employee_id, meta={"count": len(created)})
+
+    return created
+
+
+@router.delete(
+    "/{slot_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an availability slot",
+    responses={
+        204: {"description": "Slot deleted"},
+        404: {"model": schemas.Problem, "description": "Employee or slot not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def remove_availability(
+    employee_id: int = Path(..., description="Employee ID"),
+    slot_id: int = Path(..., description="Availability slot ID"),
+    db: Session = Depends(get_db),
+):
+    if not crud.get_employee(db, employee_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    slot = crud.delete_availability_slot(db, slot_id)
+    if not slot:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Slot not found")
+
+    FaaSClient().audit("availability.deleted", entity_id=employee_id, meta={"slot_id": slot_id})
+
+================================================================================
+FILE: employee-service\employee-service\app\routers\employees.py
+================================================================================
+
+# app/routers/employees.py
+from fastapi import APIRouter, HTTPException, Depends, status, Path, Query, Body
+from sqlalchemy.orm import Session
+from typing import List, Optional
+
+from app import crud, schemas
+from app.dependencies import get_db
+from app.services.interop_client import ReservationServiceClient
+from app.services.company_client import CompanyServiceClient
+
+router = APIRouter()
+
+def _validate_company_and_location(payload: schemas.EmployeeBase, client: CompanyServiceClient):
+    if not client.enabled():
+        return
+    # company -> must exist if provided
+    if payload.company_id is not None and not client.validate_company(payload.company_id):
+        raise HTTPException(status_code=400, detail=f"company_id {payload.company_id} not found")
+    # location -> must exist if provided
+    if payload.location_id is not None and not client.validate_location(payload.location_id):
+        raise HTTPException(status_code=400, detail=f"location_id {payload.location_id} not found")
+
+# ─── CRUD: Employees ───────────────────────────────────────────────────────────
+@router.post(
+    "/",
+    response_model=schemas.EmployeeOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create employee",
+    responses={
+        201: {"description": "Employee created"},
+        400: {"model": schemas.Problem, "description": "Validation error"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def create_employee(
+    payload: schemas.EmployeeCreate = Body(..., description="New employee payload"),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new employee. If COMPANY_SERVICE_URL is configured, company_id and
+    location_id (when provided) are validated against Company Service.
+    """
+    _validate_company_and_location(payload, CompanyServiceClient())
+    emp = crud.create_employee(db, payload)
+    return emp
+@router.get(
+    "/",
+    response_model=List[schemas.EmployeeOut],
+    summary="List active employees",
+    responses={
+        200: {"description": "Employees retrieved"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def list_employees(
+    skip: int = Query(0, ge=0, description="Number of records to skip (pagination)"),
+    limit: int = Query(100, ge=1, le=1000, description="Max number of records to return"),
+    db: Session = Depends(get_db),
+):
+    """Paginated list of active employees."""
+    return crud.get_employees(db, skip=skip, limit=limit)
+
+@router.get(
+    "/{employee_id}",
+    response_model=schemas.EmployeeOut,
+    summary="Get employee by ID",
+    responses={
+        200: {"description": "Employee found"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def get_employee(
+    employee_id: int = Path(..., description="Employee ID"),
+    db: Session = Depends(get_db)
+):
+    """Fetch a single employee by numeric ID."""
+    emp = crud.get_employee(db, employee_id)
+    if not emp or not emp.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return emp
+
+@router.put(
+    "/{employee_id}",
+    response_model=schemas.EmployeeOut,
+    summary="Update employee",
+    responses={
+        200: {"description": "Employee updated"},
+        400: {"model": schemas.Problem, "description": "Validation error"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def update_employee(
+    employee_id: int = Path(..., description="Employee ID"),
+    payload: schemas.EmployeeUpdate = Body(
+        ..., description="Full employee payload to replace existing data"
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Update full employee record (validation against Company Service when configured).
+    """
+    _validate_company_and_location(payload, CompanyServiceClient())
+    emp = crud.update_employee(db, employee_id, payload)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return emp
+
+@router.delete(
+    "/{employee_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete (soft) employee",
+    responses={
+        204: {"description": "Employee deactivated"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def delete_employee(
+    employee_id: int = Path(..., description="Employee ID"),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete an employee by setting active to false."""
+    emp = crud.soft_delete_employee(db, employee_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+@router.get(
+    "/{employee_id}/reservations",
+    response_model=List[schemas.Reservation],
+    summary="List reservations for employee (via reservation service)",
+    responses={
+        200: {"description": "Reservations retrieved"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        502: {"model": schemas.Problem, "description": "Upstream reservation service error"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+async def get_reservations(
+    employee_id: int = Path(..., description="Employee ID"),
+    db: Session = Depends(get_db),
+):
+    """
+    Proxy call to the Reservation service. Requires RESERVATION_SERVICE_URL in the environment.
+    """
+    emp = crud.get_employee(db, employee_id)
+    if not emp or not emp.active:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    client = ReservationServiceClient()
+    try:
+        return await client.get_reservations_for_employee(employee_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Reservation service error: {e}")
+
+@router.get(
+    "/{employee_id}/context",
+    response_model=schemas.EmployeeContextOut,
+    summary="Employee context (company, location, business hours from Company Service)",
+    responses={
+        200: {"description": "Merged view resolved from Company Service (if configured)"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+    },
+)
+def employee_context(
+    employee_id: int = Path(..., description="Employee ID"),
+    db: Session = Depends(get_db),
+):
+    emp = crud.get_employee(db, employee_id)
+    if not emp or not emp.active:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    c = CompanyServiceClient()
+    company: Optional[schemas.CompanyRef] = None
+    location: Optional[schemas.LocationRef] = None
+    business_hours: Optional[List[schemas.BusinessHoursDay]] = None
+
+    if c.enabled() and emp.company_id:
+        comp = c.get_company(emp.company_id)
+        if comp:
+            company = schemas.CompanyRef(
+                id=int(comp.get("id")),
+                name=comp.get("companyName") or comp.get("name"),
+                email=comp.get("email"),
+                phone=comp.get("phoneNumber"),
+            )
+            # weekly BH (requires /business-hours/company/{id} exposed in Company svc)
+            bh = c.get_business_hours_by_company(emp.company_id)
+            if bh:
+                business_hours = [
+                    schemas.BusinessHoursDay(
+                        dayNumber=int(x.get("dayNumber")),
+                        day=str(x.get("day")),
+                        fromTime=str(x.get("timeFrom")),
+                        toTime=str(x.get("timeTo")),
+                        pauseFrom=x.get("pauseFrom"),
+                        pauseTo=x.get("pauseTo"),
+                    )
+                    for x in bh
+                ]
+
+    if c.enabled() and emp.location_id:
+        loc = c.get_location(emp.location_id)
+        if loc:
+            # note: your DTO uses "name" that maps to model.street
+            location = schemas.LocationRef(
+                id=int(loc.get("id")),
+                street=loc.get("street") or loc.get("name"),
+                number=loc.get("number"),
+                parentLocationId=(loc.get("parentLocation", {}) or {}).get("id"),
+            )
+
+    return schemas.EmployeeContextOut(
+        employeeId=employee_id,
+        company=company,
+        location=location,
+        businessHours=business_hours,
+    )
+
+================================================================================
+FILE: employee-service\employee-service\app\routers\skills.py
+================================================================================
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Body
+from sqlalchemy.orm import Session
+from typing import List
+
+from app import crud, schemas
+from app.dependencies import get_db
+from app.services.company_client import CompanyServiceClient
+
+router = APIRouter()
+
+@router.get(
+    "/",
+    response_model=List[schemas.EmployeeSkillOut],
+    summary="List employee skills",
+    responses={
+        200: {"description": "Skills list"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def get_skills(
+    employee_id: int = Path(..., description="Employee ID"),
+    db: Session = Depends(get_db)
+):
+    if not crud.get_employee(db, employee_id):
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return crud.get_skills(db, employee_id)
+
+@router.put(
+    "/",
+    response_model=List[schemas.EmployeeSkillOut],
+    summary="Replace employee skills",
+    responses={
+        200: {"description": "Skills replaced"},
+        400: {"model": schemas.Problem, "description": "Validation error"},
+        404: {"model": schemas.Problem, "description": "Employee not found"},
+        500: {"model": schemas.Problem, "description": "Server error"},
+    },
+)
+def replace_skills(
+    employee_id: int = Path(..., description="Employee ID"),
+    service_ids: List[int] = Body(
+        ...,
+        description="List of service IDs that this employee can perform",
+        examples={"basic": {"summary": "Replace with three services", "value": [1, 3, 5]}},
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Example request
+    [1, 3, 5]
+    """
+    emp = crud.get_employee(db, employee_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # If we know the employee's company, ensure services belong to it
+    c = CompanyServiceClient()
+    if c.enabled() and emp.company_id:
+        valid_services = c.services_set_for_company(emp.company_id)
+        for sid in service_ids:
+            if sid not in valid_services:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"service_id {sid} does not belong to company_id {emp.company_id}"
+                )
+
+    return crud.replace_skills(db, employee_id, service_ids)
+
+================================================================================
+FILE: employee-service\employee-service\app\services\company_client.py
+================================================================================
+
+# app/services/company_client.py
+import os
+from typing import Optional, Dict, Any, List, Set
+import httpx
+
+def _get_bool(env: str, default: bool) -> bool:
+    v = os.getenv(env)
+    if v is None:
+        return default
+    return str(v).lower() in ("1", "true", "yes", "y", "on")
+
+class CompanyServiceClient:
+    """
+    Minimal client for Company Service for read-only lookups & validation.
+
+    ⚠️ Validation is now **opt-in** via COMPANY_VALIDATION_ENABLED=true.
+       This prevents test runs (which load .env) from failing when the
+       Company service isn't available.
+    """
+    def __init__(self):
+        self.base_url = os.getenv("COMPANY_SERVICE_URL", "").rstrip("/")
+
+        # New: explicit switch to enable validation (default OFF).
+        self._enabled = _get_bool("COMPANY_VALIDATION_ENABLED", False) and bool(self.base_url)
+
+        # Keep strict behavior only for when enabled.
+        self.strict = _get_bool("COMPANY_VALIDATION_STRICT", False)
+
+        if not self._enabled:
+            # Do not create an HTTP client when disabled.
+            self._client = None
+            return
+
+        connect_timeout = float(os.getenv("COMPANY_HTTP_CONNECT_TIMEOUT", "2.0"))
+        read_timeout = float(os.getenv("COMPANY_HTTP_READ_TIMEOUT", "2.0"))
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(
+                connect=connect_timeout,
+                read=read_timeout,
+                write=read_timeout,
+                pool=connect_timeout,
+            ),
+        )
+
+    def enabled(self) -> bool:
+        return self._enabled
+
+    # ─── Raw calls ────────────────────────────────────────────────────────────
+
+    def get_company(self, company_id: int) -> Optional[Dict[str, Any]]:
+        if not self._enabled:
+            return None
+        try:
+            r = self._client.get(f"/companies/{company_id}")
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if self.strict:
+                raise
+            return None
+
+    def get_location(self, location_id: int) -> Optional[Dict[str, Any]]:
+        if not self._enabled:
+            return None
+        try:
+            r = self._client.get(f"/locations/{location_id}")
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if self.strict:
+                raise
+            return None
+
+    def get_services_for_company(self, company_id: int) -> List[Dict[str, Any]]:
+        if not self._enabled:
+            return []
+        try:
+            r = self._client.get(f"/services/company/{company_id}")
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if self.strict:
+                raise
+            return []
+
+    def get_business_hours_by_company(self, company_id: int) -> List[Dict[str, Any]]:
+        if not self._enabled:
+            return []
+        try:
+            r = self._client.get(f"/business-hours/company/{company_id}")
+            if r.status_code == 404:
+                return []
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if self.strict:
+                raise
+            return []
+
+    # ─── Helpers for validation ──────────────────────────────────────────────
+
+    def validate_company(self, company_id: Optional[int]) -> bool:
+        if company_id is None or not self._enabled:
+            return True
+        return self.get_company(company_id) is not None
+
+    def validate_location(self, location_id: Optional[int]) -> bool:
+        if location_id is None or not self._enabled:
+            return True
+        return self.get_location(location_id) is not None
+
+    def services_set_for_company(self, company_id: Optional[int]) -> Set[int]:
+        if company_id is None or not self._enabled:
+            return set()
+        return {int(s["id"]) for s in self.get_services_for_company(company_id) if "id" in s}
+
+================================================================================
+FILE: employee-service\employee-service\app\services\faas_client.py
+================================================================================
+
+# app/services/faas_client.py
+import os
+from typing import Any, Dict, List, Optional, Union
+import httpx
+from datetime import time as dtime
+
+def _get_bool(env: str, default: bool) -> bool:
+    v = os.getenv(env)
+    if v is None:
+        return default
+    return str(v).lower() in ("1", "true", "yes", "y", "on")
+
+def _to_hms(v: Union[str, dtime]) -> str:
+    if isinstance(v, dtime):
+        return v.strftime("%H:%M:%S")
+    return str(v)
+
+class FaaSClient:
+    """
+    Thin client for the employee FAAS utility.
+
+    - All calls are no-ops when disabled (so service remains self-contained).
+    - Fail-open on validation (if FAAS is unreachable, we don't block writes).
+    - Accepts FAAS_BASE_URL with or without `/api` and adds it if needed.
+    """
+    def __init__(self):
+        base = (os.getenv("FAAS_BASE_URL", "") or "").rstrip("/")
+        self.base_url = base
+        self._enabled = _get_bool("FAAS_ENABLED", False) and bool(self.base_url)
+        self._audit_enabled = _get_bool("FAAS_AUDIT_ENABLED", False)
+        self.service_name = os.getenv("FAAS_AUDIT_SERVICE", "employee-service")
+
+        # Whether we should prefix paths with /api
+        self._needs_api_prefix = not self.base_url.endswith("/api")
+
+        if not self._enabled:
+            self._client = None
+            return
+
+        connect_timeout = float(os.getenv("FAAS_CONNECT_TIMEOUT", "2.0"))
+        read_timeout = float(os.getenv("FAAS_READ_TIMEOUT", "2.0"))
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(
+                connect=connect_timeout, read=read_timeout,
+                write=read_timeout, pool=connect_timeout
+            ),
+        )
+
+    # remove the auto '/api' logic completely
+    def _path(self, suffix: str) -> str:
+        # trust FAAS_BASE_URL exactly
+        return suffix if suffix.startswith("/") else f"/{suffix}"
+
+    def enabled(self) -> bool:
+        return self._enabled
+
+    # ─── Availability validation ──────────────────────────────────────────────
+    def availability_check(
+        self,
+        slots: List[Dict[str, Any]],
+        business_hours: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """
+        slots: [{day_of_week, time_from, time_to, location_id?}] times as str or datetime.time
+        business_hours: [{dayNumber, fromTime/timeFrom, toTime/timeTo, ...}] (optional)
+        """
+        if not self._enabled:
+            return {"ok": True, "overlaps": [], "outOfBounds": []}
+
+        payload_slots = []
+        for s in slots:
+            payload_slots.append({
+                "day_of_week": int(s["day_of_week"]),
+                "time_from": _to_hms(s["time_from"]),
+                "time_to": _to_hms(s["time_to"]),
+                "location_id": s.get("location_id"),
+            })
+
+        bh = None
+        if business_hours:
+            bh = []
+            for d in business_hours:
+                # accept either {fromTime,toTime} or {timeFrom,timeTo}
+                from_t = d.get("fromTime", d.get("timeFrom"))
+                to_t = d.get("toTime", d.get("timeTo"))
+                bh.append({
+                    "dayNumber": int(d.get("dayNumber")),
+                    "fromTime": _to_hms(from_t),
+                    "toTime": _to_hms(to_t),
+                })
+
+        try:
+            r = self._client.post(self._path("/availability-check"), json={
+                "slots": payload_slots,
+                "businessHours": bh
+            })
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            # Fail-open: don't block writes if FAAS is down.
+            return {"ok": True, "overlaps": [], "outOfBounds": []}
+
+    # ─── Audit logging ────────────────────────────────────────────────────────
+    def audit(
+        self,
+        event: str,
+        entity_id: Optional[int] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not (self._enabled and self._audit_enabled):
+            return
+        try:
+            self._client.post(self._path("/audit"), json={
+                "service": self.service_name,
+                "event": event,
+                "entityId": entity_id,
+                "meta": meta or {}
+            })
+        except Exception:
+            # swallow audit errors (best-effort telemetry)
+            pass
+
+================================================================================
+FILE: employee-service\employee-service\app\services\interop_client.py
+================================================================================
+
+# app/services/interop_client.py
+import os
+import httpx
+
+class ReservationServiceClient:
+    def __init__(self):
+        self.base_url = os.getenv("RESERVATION_SERVICE_URL")
+        if not self.base_url:
+            # If missing, raise so we document a 502 upstream error in the route
+            raise RuntimeError("RESERVATION_SERVICE_URL is not configured")
+
+    async def get_reservations_for_employee(self, employee_id: int):
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{self.base_url}/reservations", params={"employee_id": employee_id})
+            r.raise_for_status()
+            return r.json()
+
+================================================================================
+FILE: employee-service\employee-service\app\services\storage.py
+================================================================================
+
+# app/services/storage.py
+import os, io
+from PIL import Image
+from fastapi import UploadFile
+
+ROOT      = os.getenv("STORAGE_PATH", "storage")
+ORIG_DIR  = os.path.join(ROOT, "originals")
+THUMB_DIR = os.path.join(ROOT, "thumbnails")
+
+for d in (ORIG_DIR, THUMB_DIR):
+    os.makedirs(d, exist_ok=True)
+
+class LocalStorage:
+    @staticmethod
+    async def save_and_thumbnail(file: UploadFile, employee_id: int) -> str:
+        data = await file.read()
+        ext = file.content_type.split("/")[-1]
+        orig_path = os.path.join(ORIG_DIR, f"{employee_id}.{ext}")
+        with open(orig_path, "wb") as f:
+            f.write(data)
+
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img.thumbnail((128, 128))
+        thumb_path = os.path.join(THUMB_DIR, f"{employee_id}.jpg")
+        img.save(thumb_path, format="JPEG")
+
+        # public URL under the main app’s /files mount:
+        return f"/files/thumbnails/{employee_id}.jpg"
+
+================================================================================
+FILE: employee-service\employee-service\tests\conftest.py
+================================================================================
+
+# tests/conftest.py
+
+import os
+import sys
+import tempfile
+
+# ensure our project root (the directory containing `app/`) is on the PYTHONPATH
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+# Isolated on-disk storage for StaticFiles mount & thumbnails
+_tmp_storage = tempfile.mkdtemp(prefix="emp_storage_")
+os.environ["STORAGE_PATH"] = _tmp_storage
+
+# Use in-memory SQLite for tests
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+os.environ["DATABASE_URL"] = SQLALCHEMY_DATABASE_URL
+
+# If your interop client gets instantiated, make sure base URL exists
+os.environ.setdefault("RESERVATION_SERVICE_URL", "http://dummy-reservation-service.local/api")
+
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(
+    autocommit=False, autoflush=False, bind=engine
+)
+
+# Patch app.database to use our test engine/session
+import app.database
+app.database.engine = engine
+app.database.SessionLocal = TestingSessionLocal
+
+# Now import Base, FastAPI app, etc.
+from fastapi.testclient import TestClient
+from app.database import Base
+from app.dependencies import get_db
+from app.main import app
+
+# Create schema
+Base.metadata.create_all(bind=engine)
+
+# Override dependency for routes
+def override_get_db():
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
+
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as c:
+        yield c
+
+================================================================================
+FILE: employee-service\employee-service\tests\test_auth.py
+================================================================================
+
+# Auth is handled by the API Gateway; this service no longer exposes /token.
+import pytest
+pytest.skip("Auth endpoints removed from employee-service; covered at API Gateway.", allow_module_level=True)
+
+================================================================================
+FILE: employee-service\employee-service\tests\test_availability.py
+================================================================================
+
+# tests/test_availability.py
+
+def test_availability_crud(client):
+    # Create employee
+    emp = {
+        "first_name": "Cal",
+        "last_name": "Slots",
+        "gender": True,
+        "birth_date": "1990-05-05"
+    }
+    emp_id = client.post("/employees/", json=emp).json()["id"]
+
+    # GET availability (empty)
+    r = client.get(f"/employees/{emp_id}/availability/")
+    assert r.status_code == 200
+    assert r.json() == []
+
+    # POST availability (create two slots)
+    slots = [
+        {"day_of_week": 1, "time_from": "09:00:00", "time_to": "12:00:00", "location_id": 3},
+        {"day_of_week": 3, "time_from": "13:00:00", "time_to": "17:00:00", "location_id": 3},
+    ]
+    r = client.post(f"/employees/{emp_id}/availability/", json=slots)
+    assert r.status_code == 200
+    created = r.json()
+    assert len(created) == 2
+    slot_ids = [s["id"] for s in created]
+
+    # GET availability (should have two)
+    r = client.get(f"/employees/{emp_id}/availability/")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 2
+
+    # DELETE one slot
+    r = client.delete(f"/employees/{emp_id}/availability/{slot_ids[0]}")
+    assert r.status_code == 204
+
+    # GET availability (now one left)
+    r = client.get(f"/employees/{emp_id}/availability/")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["id"] == slot_ids[1]
+
+================================================================================
+FILE: employee-service\employee-service\tests\test_employees.py
+================================================================================
+
+# tests/test_employees.py
+import pytest
+
+def test_health(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+def test_create_read_update_delete_employee(client):
+    # CREATE
+    payload = {
+        "first_name": "John",
+        "last_name": "Doe",
+        "gender": True,
+        "birth_date": "1990-01-01"
+    }
+    r = client.post("/employees/", json=payload)
+    assert r.status_code == 201
+    emp = r.json()
+    assert emp["first_name"] == "John"
+    emp_id = emp["id"]
+
+    # READ list
+    r = client.get("/employees/")
+    assert r.status_code == 200
+    assert any(e["id"] == emp_id for e in r.json())
+
+    # READ detail
+    r = client.get(f"/employees/{emp_id}")
+    assert r.status_code == 200 and r.json()["id"] == emp_id
+
+    # UPDATE
+    upd = {
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "gender": False,
+        "birth_date": "1992-02-02",
+        "idp_id": None,
+        "id_picture": None,
+        "active": True
+    }
+    r = client.put(f"/employees/{emp_id}", json=upd)
+    assert r.status_code == 200
+    assert r.json()["first_name"] == "Jane"
+
+    # DELETE (soft)
+    r = client.delete(f"/employees/{emp_id}")
+    assert r.status_code == 204
+
+    # ensure it no longer appears in GET /employees
+    r = client.get("/employees/")
+    assert r.status_code == 200
+    assert all(e["id"] != emp_id for e in r.json())
+
+# stub out the inter-service call
+@pytest.fixture(autouse=True)
+def fake_reservation(monkeypatch):
+    async def fake_get(self, employee_id):
+        return [{"id": 1, "employee_id": employee_id, "date": "2025-01-01", "time_from": "09:00:00", "time_to": "10:00:00"}]
+    from app.services.interop_client import ReservationServiceClient
+    monkeypatch.setattr(ReservationServiceClient, "get_reservations_for_employee", fake_get)
+
+def test_get_reservations(client):
+    # create an employee
+    payload = {
+        "first_name": "Tom",
+        "last_name": "Thumb",
+        "gender": True,
+        "birth_date": "1991-01-01"
+    }
+    emp_id = client.post("/employees/", json=payload).json()["id"]
+
+    r = client.get(f"/employees/{emp_id}/reservations")
+    assert r.status_code == 200
+    data = r.json()
+    assert data and data[0]["employee_id"] == emp_id
+
+================================================================================
+FILE: employee-service\employee-service\tests\test_skills.py
+================================================================================
+
+# tests/test_skills.py
+
+def test_skills_replace_and_get(client):
+    # Create employee
+    emp = {
+        "first_name": "Sam",
+        "last_name": "Skills",
+        "gender": True,
+        "birth_date": "1994-04-04"
+    }
+    emp_id = client.post("/employees/", json=emp).json()["id"]
+
+    # GET skills (empty)
+    r = client.get(f"/employees/{emp_id}/skills/")
+    assert r.status_code == 200
+    assert r.json() == []
+
+    # PUT replace skills
+    r = client.put(f"/employees/{emp_id}/skills/", json=[1, 3, 5])
+    assert r.status_code == 200
+    skills = sorted([s["service_id"] for s in r.json()])
+    assert skills == [1, 3, 5]
+
+    # GET confirm
+    r = client.get(f"/employees/{emp_id}/skills/")
+    assert r.status_code == 200
+    skills = sorted([s["service_id"] for s in r.json()])
+    assert skills == [1, 3, 5]
+
+    # Replace again
+    r = client.put(f"/employees/{emp_id}/skills/", json=[2])
+    assert r.status_code == 200
+    skills = [s["service_id"] for s in r.json()]
+    assert skills == [2]
 
 ================================================================================
 FILE: user-service\.dockerignore
@@ -6984,21 +9533,23 @@ components:
         error:
           type: string
       required: [error]
-
-    # Users
+      
+    # ----- Users -----
     User:
       type: object
       properties:
         id: { type: integer }
         name: { type: string }
         email: { type: string, format: email }
+        phone: { type: string }       # NOVO
       required: [id, name, email]
 
     UserCreate:
       type: object
       properties:
-        name: { type: string }
+        name:  { type: string }
         email: { type: string, format: email }
+        phone: { type: string }       # NOVO (neobvezno)
       required: [name, email]
 
     UserUpdate:
@@ -7084,6 +9635,7 @@ CREATE TABLE IF NOT EXISTS user (
   email VARCHAR(100),
   oauth_id VARCHAR(45),
   location_id INT,
+  phone VARCHAR(20),
   FOREIGN KEY (location_id) REFERENCES location(id)
 );
 
@@ -7250,7 +9802,6 @@ module.exports = {
 FILE: user-service\src\graphql\schema.js
 ================================================================================
 
-// user-service/src/graphql/schema.js
 const { gql } = require('apollo-server-express');
 
 module.exports = gql`
@@ -7261,7 +9812,8 @@ module.exports = gql`
     first_name: String
     last_name: String
     email: String!
-    name: String!              # computed "First Last"
+    name: String!          # computed "First Last"
+    phone: String          # NOVO
   }
 
   type Location {
@@ -7283,9 +9835,9 @@ module.exports = gql`
     serviceId: ID
     locationId: ID
 
-    createdAt: Date!           # stvarno polje iz DB-a / modela
-    date: Date                 # alias na createdAt (radi kompatibilnosti)
-    amount: Float              # opcionalno
+    createdAt: Date!
+    date: Date
+    amount: Float
 
     user: User
     location: Location
@@ -7302,7 +9854,7 @@ module.exports = gql`
     reservation(id: ID!): Reservation
     reservationsByUser(userId: ID!): [Reservation!]!
 
-    # SERVICES (DODANO da se poklopi s resolverima)
+    # SERVICES (če jih uporabljaš)
     services: [Service!]!
     service(id: ID!): Service
   }
@@ -7433,6 +9985,7 @@ FILE: user-service\src\models\userModel.js
 const db = require('../config/db');
 
 const getAllUsers = async () => {
+  // SELECT * će već vraćati i phone ako kolona postoji
   const [rows] = await db.query('SELECT * FROM user');
   return rows;
 };
@@ -7443,19 +9996,19 @@ const getUserById = async (id) => {
 };
 
 const createUser = async (user) => {
-  const { first_name, last_name, email, oauth_id, location_id } = user;
+  const { first_name, last_name, email, oauth_id, location_id, phone } = user;
   const [result] = await db.query(
-    'INSERT INTO user (first_name, last_name, email, oauth_id, location_id) VALUES (?, ?, ?, ?, ?)',
-    [first_name, last_name, email, oauth_id, location_id]
+    'INSERT INTO user (first_name, last_name, email, oauth_id, location_id, phone) VALUES (?, ?, ?, ?, ?, ?)',
+    [first_name, last_name, email, oauth_id, location_id, phone]
   );
   return { id: result.insertId, ...user };
 };
 
 const updateUser = async (id, user) => {
-  const { first_name, last_name, email, oauth_id, location_id } = user;
+  const { first_name, last_name, email, oauth_id, location_id, phone } = user;
   await db.query(
-    'UPDATE user SET first_name = ?, last_name = ?, email = ?, oauth_id = ?, location_id = ? WHERE id = ?',
-    [first_name, last_name, email, oauth_id, location_id, id]
+    'UPDATE user SET first_name = ?, last_name = ?, email = ?, oauth_id = ?, location_id = ?, phone = ? WHERE id = ?',
+    [first_name, last_name, email, oauth_id, location_id, phone, id]
   );
   return { id, ...user };
 };
@@ -7720,33 +10273,64 @@ const userModel = require('../models/userModel');
 
 // GET all users
 router.get('/', async (req, res) => {
-  const users = await userModel.getAllUsers();
-  res.json(users);
+  try {
+    const users = await userModel.getAllUsers();
+    res.json(users);
+  } catch (err) {
+    console.error('GET /users error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
 // GET user by ID
 router.get('/:id', async (req, res) => {
-  const user = await userModel.getUserById(req.params.id);
-  if (!user) return res.status(404).json({ message: 'User not found' });
-  res.json(user);
+  try {
+    const user = await userModel.getUserById(req.params.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    console.error('GET /users/:id error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
 // POST create new user
 router.post('/', async (req, res) => {
-  const newUser = await userModel.createUser(req.body);
-  res.status(201).json(newUser);
+  try {
+    // pričakujemo { name, email, phone? }
+    const newUser = await userModel.createUser(req.body);
+    res.status(201).json(newUser);
+  } catch (err) {
+    console.error('POST /users error:', err);
+    // Unique email itd.
+    const status = err.code === 'ER_DUP_ENTRY' ? 409 : 500;
+    res.status(status).json({ message: err.message || 'Internal server error' });
+  }
 });
 
 // PUT update user
 router.put('/:id', async (req, res) => {
-  const updatedUser = await userModel.updateUser(req.params.id, req.body);
-  res.json(updatedUser);
+  try {
+    // pričakujemo { name, email, phone? }
+    const updatedUser = await userModel.updateUser(req.params.id, req.body);
+    if (!updatedUser) return res.status(404).json({ message: 'User not found' });
+    res.json(updatedUser);
+  } catch (err) {
+    console.error('PUT /users/:id error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
 // DELETE user
 router.delete('/:id', async (req, res) => {
-  await userModel.deleteUser(req.params.id);
-  res.json({ message: 'User deleted' });
+  try {
+    const ok = await userModel.deleteUser(req.params.id);
+    if (!ok) return res.status(404).json({ message: 'User not found' });
+    res.json({ message: 'User deleted' });
+  } catch (err) {
+    console.error('DELETE /users/:id error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 });
 
 module.exports = router;

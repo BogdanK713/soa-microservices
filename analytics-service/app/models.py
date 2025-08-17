@@ -5,12 +5,12 @@ from pydantic import BaseModel, Field, EmailStr
 
 # ---------- Users ----------
 class UserIn(BaseModel):
-    first_name: Optional[str] = Field(None, example="Ana")
-    last_name: Optional[str] = Field(None, example="Novak")
+    name: str = Field(..., example="Ana Novak")
     email: EmailStr = Field(..., example="ana@example.com")
 
 class UserOut(UserIn):
     id: int
+
 
 # ---------- Time Dimension ----------
 class TimeDimIn(BaseModel):
@@ -22,6 +22,7 @@ class TimeDimIn(BaseModel):
 class TimeDimOut(TimeDimIn):
     id: int
 
+
 # ---------- Employees ----------
 class EmployeeIn(BaseModel):
     name: str = Field(..., example="Marko Marković")
@@ -29,6 +30,7 @@ class EmployeeIn(BaseModel):
 
 class EmployeeOut(EmployeeIn):
     id: int
+
 
 # ---------- Locations ----------
 class LocationIn(BaseModel):
@@ -38,6 +40,7 @@ class LocationIn(BaseModel):
 class LocationOut(LocationIn):
     id: int
 
+
 # ---------- Services ----------
 class ServiceIn(BaseModel):
     name: str = Field(..., example="Haircut")
@@ -46,6 +49,7 @@ class ServiceIn(BaseModel):
 
 class ServiceOut(ServiceIn):
     id: int
+
 
 # ---------- Payments ----------
 class PaymentIn(BaseModel):
@@ -57,6 +61,7 @@ class PaymentIn(BaseModel):
 class PaymentOut(PaymentIn):
     id: int
 
+
 # ---------- Cancellations ----------
 class CancellationIn(BaseModel):
     reservation_id: int = Field(..., example=101)
@@ -65,6 +70,7 @@ class CancellationIn(BaseModel):
 
 class CancellationOut(CancellationIn):
     id: int
+
 
 # ---------- Reservations ----------
 class ReservationIn(BaseModel):
@@ -77,20 +83,42 @@ class ReservationIn(BaseModel):
 class ReservationOut(ReservationIn):
     id: int
 
+
 # ---------- Analytics DTOs (za /analytics/* rute) ----------
 class ReservationsPerMonthItem(BaseModel):
+    year: int = Field(..., example=2025)
     month: int = Field(..., ge=1, le=12, example=5)
-    count: int = Field(..., ge=0, example=42)
+    total: int = Field(..., ge=0, example=42)
 
 class RevenueByServiceItem(BaseModel):
+    service_id: int = Field(..., example=2)
     service_name: str = Field(..., example="Haircut")
-    total_revenue: float = Field(..., ge=0, example=199.95)
+    revenue: float = Field(..., ge=0, example=199.95)
 
 class ReservationsByLocationItem(BaseModel):
+    location_id: int = Field(..., example=1)
     location_name: str = Field(..., example="Center")
-    count: int = Field(..., ge=0, example=30)
+    total: int = Field(..., ge=0, example=30)
 
 class TopUserItem(BaseModel):
     user_id: int = Field(..., example=5)
-    user_email: EmailStr = Field(..., example="ana@example.com")
-    total_amount: float = Field(..., ge=0, example=349.50)
+    total_reservations: int = Field(..., ge=0, example=12)
+
+
+# ---------- Reports & Alerts (value-add u tvojoj bazi) ----------
+class ReportIn(BaseModel):
+    name: str = Field(..., example="Mesečni promet po uslugama")
+    query: dict = Field(..., example={"type": "revenue_by_service", "from": "2025-01-01", "to": "2025-01-31"})
+    schedule_cron: Optional[str] = Field(None, example="0 9 * * *")
+
+class ReportOut(ReportIn):
+    id: int
+
+class AlertIn(BaseModel):
+    name: str = Field(..., example="Pad rezervacija")
+    # alias ostavljen radi kompatibilnosti s .dict(by_alias=True) u rutama
+    condition: dict = Field(..., alias="condition", example={"type": "reservations_drop", "threshold": 20})
+    enabled: bool = Field(True, example=True)
+
+class AlertOut(AlertIn):
+    id: int

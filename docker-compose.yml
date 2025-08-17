@@ -1,92 +1,203 @@
-version: '3.8'
+# docker-compose.yml  (Compose v2 ne treba "version:")
+
+networks:
+  soa-net:
+
+volumes:
+  user_db_data:
+  employee-db-data:
+  company-db-data:
+  analytics_mysql_data:
+  employee-storage:
 
 services:
-  # === USER SERVICE + DATABASE ===
-  user-service:
-    build: ./user-service
-    container_name: user-service
-    ports:
-      - "3000:3000"
-    depends_on:
-      - user-mysql
-      - calendar-service          # čekaj i kalendar (nije striktno, ali praktično)
-    environment:
-      DB_HOST: user-mysql
-      DB_USER: root
-      DB_PASSWORD: root
-      DB_NAME: user_service_db
-      PORT: 3000
-      # URL za integraciju s calendar-service (isti network hostname)
-      CALENDAR_URL: http://calendar-service:8080
-    volumes:
-      - ./user-service:/app
-    restart: unless-stopped
-    networks:
-      - soa-net
-
+  # ---------- USER (Node/Express) ----------
   user-mysql:
     image: mysql:8.0
     container_name: user-mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: user_service_db
+      MYSQL_USER: user_svc
+      MYSQL_PASSWORD: userpass
+    ports:
+      - "3309:3306"
+    volumes:
+      - user_db_data:/var/lib/mysql
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    depends_on:
+      user-mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: user-mysql
+      DB_PORT: "3306"
+      DB_USER: user_svc
+      DB_PASSWORD: userpass
+      DB_NAME: user_service_db
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    networks: [soa-net]
+    restart: unless-stopped
+
+  # ---------- EMPLOYEE (FastAPI) ----------
+  employee-db:
+    image: mysql:8.0
+    container_name: employee-db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: employee_db
+      MYSQL_USER: employee_user
+      MYSQL_PASSWORD: employeepass
     ports:
       - "3307:3306"
     volumes:
-      - user_mysql_data:/var/lib/mysql
-      - ./user-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - soa-net
+      - employee-db-data:/var/lib/mysql
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
-  # === ANALYTICS SERVICE + DATABASE ===
-  analytics-service:
-    build: ./analytics-service
-    container_name: analytics-service
-    ports:
-      - "8000:8000"
+  employee-svc:
+    build:
+      context: ./employee-service/employee-service
+      dockerfile: Dockerfile
+    container_name: employee-svc
     depends_on:
-      - analytics-mysql
+      employee-db:
+        condition: service_healthy
     environment:
-      DB_HOST: analytics-mysql
-      DB_USER: root
-      DB_PASSWORD: root
-      DB_NAME: reservation_service_db
+      DATABASE_URL: mysql+pymysql://employee_user:employeepass@employee-db:3306/employee_db
+      STORAGE_PATH: /storage
+      COMPANY_SERVICE_URL: http://company-service:8082/api   # <-- 8082 i /api
+      COMPANY_HTTP_CONNECT_TIMEOUT: "2.0"
+      COMPANY_HTTP_READ_TIMEOUT: "2.0"
+      COMPANY_VALIDATION_STRICT: "false"
+      COMPANY_VALIDATION_ENABLED: "true"
+      FAAS_BASE_URL: https://employee-utils-faas.onrender.com
+      FAAS_ENABLED: "true"
+      FAAS_CONNECT_TIMEOUT: "2.0"
+      FAAS_READ_TIMEOUT: "2.0"
+      FAAS_AUDIT_ENABLED: "true"
+      FAAS_AUDIT_SERVICE: employee-service
+    ports:
+      - "8010:8000"
     volumes:
-      - ./analytics-service/app:/app/app
-    networks:
-      - soa-net
+      - ./employee-service/employee-service/storage:/storage
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks: [soa-net]
+    restart: unless-stopped
 
+  # ---------- COMPANY / RESERVATION (Spring Boot) ----------
+  company-db:
+    image: mysql:8.0
+    container_name: company-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: company_db
+      MYSQL_USER: company_user
+      MYSQL_PASSWORD: companypass
+    ports:
+      - "3310:3306"
+    volumes:
+      - company-db-data:/var/lib/mysql
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  company-service:
+    build:
+      context: ./company-reservation-service/company-reservation-service
+    container_name: company-service
+    depends_on:
+      company-db:
+        condition: service_healthy
+    environment:
+      # Spring datasource (MySQL)
+      SPRING_DATASOURCE_URL: jdbc:mysql://company-db:3306/company_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: company_user
+      SPRING_DATASOURCE_PASSWORD: companypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      # (po potrebi) SPRING_SQL_INIT_MODE: always
+      # integracija na User service:
+      USER_SERVICE_URL: http://user-service:3000/api
+      # Ako app koristi server.port iz env, ovim ga forsiraš na 8082:
+      SERVER_PORT: "8082"
+    ports:
+      - "8082:8082"        # Tomcat u logu kaže 8082 -> mapiramo 8082:8082
+    networks: [soa-net]
+    restart: unless-stopped
+
+  # ---------- ANALYTICS (FastAPI) ----------
   analytics-mysql:
     image: mysql:8.0
     container_name: analytics-mysql
+    command: --default-authentication-plugin=mysql_native_password
     environment:
       MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: reservation_service_db
     ports:
       - "3308:3306"
     volumes:
       - analytics_mysql_data:/var/lib/mysql
-      - ./analytics-service/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - soa-net
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
-  # === NEW: CALENDAR SERVICE (Google Calendar) ===
+  analytics-service:
+    build:
+      context: ./analytics-service
+      dockerfile: Dockerfile
+    container_name: analytics-service
+    depends_on:
+      analytics-mysql:
+        condition: service_healthy
+      employee-svc:
+        condition: service_started
+      company-service:
+        condition: service_started
+    environment:
+      DB_HOST: analytics-mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: reservation_service_db
+      EMPLOYEE_BASE_URL: http://employee-svc:8000
+      COMPANY_BASE_URL:  http://company-service:8082/api   # <-- natrag na 8082 + /api
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks: [soa-net]
+    restart: unless-stopped
+
+  # ---------- CALENDAR (Node) ----------
   calendar-service:
-    build: ./calendar-service
+    build:
+      context: ./calendar-service
+      dockerfile: Dockerfile
     container_name: calendar-service
+    env_file:
+      - ./.env
     ports:
       - "8080:8080"
-    environment:
-      PORT: 8080
-      # vrijednosti čita iz .env u rootu (Compose ih prošverca ovdje)
-      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL}
-      GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY}
-      CALENDAR_ID: ${CALENDAR_ID}
+    networks: [soa-net]
     restart: unless-stopped
-    networks:
-      - soa-net
-
-volumes:
-  user_mysql_data:
-  analytics_mysql_data:
-
-networks:
-  soa-net:
