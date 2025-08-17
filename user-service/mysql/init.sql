@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS user (
   email VARCHAR(100),
   oauth_id VARCHAR(45),
   location_id INT,
+  phone VARCHAR(20),
   FOREIGN KEY (location_id) REFERENCES location(id)
 );
 

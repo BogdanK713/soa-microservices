@@ -498,21 +498,23 @@ components:
         error:
           type: string
       required: [error]
-
-    # Users
+      
+    # ----- Users -----
     User:
       type: object
       properties:
         id: { type: integer }
         name: { type: string }
         email: { type: string, format: email }
+        phone: { type: string }       # NOVO
       required: [id, name, email]
 
     UserCreate:
       type: object
       properties:
-        name: { type: string }
+        name:  { type: string }
         email: { type: string, format: email }
+        phone: { type: string }       # NOVO (neobvezno)
       required: [name, email]
 
     UserUpdate:

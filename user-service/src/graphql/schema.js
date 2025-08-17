@@ -1,4 +1,3 @@
-// user-service/src/graphql/schema.js
 const { gql } = require('apollo-server-express');
 
 module.exports = gql`
@@ -9,7 +8,8 @@ module.exports = gql`
     first_name: String
     last_name: String
     email: String!
-    name: String!              # computed "First Last"
+    name: String!          # computed "First Last"
+    phone: String          # NOVO
   }
 
   type Location {
@@ -31,9 +31,9 @@ module.exports = gql`
     serviceId: ID
     locationId: ID
 
-    createdAt: Date!           # stvarno polje iz DB-a / modela
-    date: Date                 # alias na createdAt (radi kompatibilnosti)
-    amount: Float              # opcionalno
+    createdAt: Date!
+    date: Date
+    amount: Float
 
     user: User
     location: Location
@@ -50,7 +50,7 @@ module.exports = gql`
     reservation(id: ID!): Reservation
     reservationsByUser(userId: ID!): [Reservation!]!
 
-    # SERVICES (DODANO da se poklopi s resolverima)
+    # SERVICES (če jih uporabljaš)
     services: [Service!]!
     service(id: ID!): Service
   }
