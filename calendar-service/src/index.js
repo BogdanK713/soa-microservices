@@ -1,31 +1,41 @@
+// calendar-service/src/index.js
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
-const { listEvents, createEvent, deleteEvent } = require('./google');
 const path = require('path');
 const swaggerUi = require('swagger-ui-express');
 const YAML = require('yamljs');
 
+const { listEvents, createEvent, deleteEvent } = require('./google');
+const { mountGraphQL } = require('./graphql/mount');
+
 const app = express();
 
-// CORS + log
+// CORS + logs
 app.use(cors());
 app.use(morgan('tiny'));
 
-// --- Swagger UI & OpenAPI ---
+// ---- Swagger UI & OpenAPI ----
 const openapi = YAML.load(path.join(__dirname, 'docs', 'openapi.yaml'));
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapi));
 app.get('/openapi.yaml', (_req, res) => {
+  // yamljs stringify
   res.type('text/yaml').send(YAML.stringify(openapi, 10, 2));
 });
 app.get('/openapi.json', (_req, res) => res.json(openapi));
 
-// Uvijek popuni req.rawBody, a req.body ako je validan JSON.
+// ---- JSON body for REST (safe, standard) ----
+app.use(express.json({ limit: '1mb' }));
+
+// ---- Optional: your previous raw-body helper, but SKIP /graphql completely ----
 app.use((req, res, next) => {
+  // Let Apollo fully control /graphql requests (GET and POST)
+  if ((req.path || '').startsWith('/graphql')) return next();
+
+  // For other routes, retain your tolerant behavior
   let data = '';
   req.setEncoding('utf8');
 
-  // samo za metode koje mogu imati tijelo
   const method = (req.method || 'GET').toUpperCase();
   const mayHaveBody = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
   if (!mayHaveBody) return next();
@@ -33,31 +43,28 @@ app.use((req, res, next) => {
   req.on('data', chunk => { data += chunk; });
   req.on('end', () => {
     req.rawBody = data;
-    req.body = undefined;           // namjerno undefined dok ne odlučimo
-
+    // If content-type says JSON but body is invalid, leave req.body undefined;
+    // downstream handlers can check req.jsonParseError and fall back to rawBody if needed.
     const ctype = (req.headers['content-type'] || '').toLowerCase();
     if (ctype.includes('application/json')) {
       if (data && data.trim()) {
         try {
           req.body = JSON.parse(data);
         } catch {
-          // NE vraćamo 400 ovdje – rute će same validirati ili fallbackati na rawBody
           req.body = undefined;
           req.jsonParseError = true;
         }
       } else {
-        req.body = {}; // prazan JSON body je ok
+        req.body = {};
       }
     }
-    // ako je text/plain ili nešto treće – ostavi body = undefined, rawBody je dostupan
     return next();
   });
 
   req.on('error', (err) => {
-    // čak i u slučaju greške, nastavi – rute će znati reći korisniku šta fali
     req.rawBody = req.rawBody || '';
     req.body = req.body || undefined;
-    req.bodyReadError = String(err && err.message || err);
+    req.bodyReadError = String((err && err.message) || err);
     return next();
   });
 });
@@ -66,7 +73,7 @@ app.use((req, res, next) => {
 app.get('/', (_req, res) => res.json({ ok: true, service: 'calendar-service' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Diag: vidi šta je stvarno stiglo
+// Diagnostics: echo back what was received
 app.post('/echo', (req, res) => {
   res.json({
     ok: true,
@@ -79,7 +86,9 @@ app.post('/echo', (req, res) => {
   });
 });
 
-// GET /events – lista
+// ----- REST: Events -----
+
+// GET /events – list
 app.get('/events', async (req, res) => {
   try {
     const items = await listEvents({
@@ -94,12 +103,12 @@ app.get('/events', async (req, res) => {
   }
 });
 
-// POST /events – kreiraj
+// POST /events – create
 app.post('/events', async (req, res) => {
   try {
     let payload = req.body;
 
-    // fallback: ako Content-Type nije JSON ili je parse pao, probaj rawBody kao JSON
+    // Fallback: if not parsed as JSON, try rawBody
     if (!payload || typeof payload !== 'object') {
       if (req.rawBody && req.rawBody.trim().startsWith('{')) {
         try {
@@ -119,7 +128,7 @@ app.post('/events', async (req, res) => {
   }
 });
 
-// DELETE /events/:id – obriši
+// DELETE /events/:id – delete
 app.delete('/events/:id', async (req, res) => {
   try {
     const data = await deleteEvent(req.params.id);
@@ -129,8 +138,16 @@ app.delete('/events/:id', async (req, res) => {
   }
 });
 
-// Uniform 404 JSON
-app.use((req, res) => res.status(404).json({ ok: false, error: 'Not Found' }));
+// ---- Bootstrap: mount GraphQL first, then listen ----
+(async () => {
+  await mountGraphQL(app, '/graphql'); // <- await ensures the route exists before first requests
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`calendar-service listening on :${PORT}`));
+  // Uniform 404 JSON (keep last)
+  app.use((req, res) => res.status(404).json({ ok: false, error: 'Not Found' }));
+
+  const PORT = process.env.PORT || 8080;
+  app.listen(PORT, () => console.log(`calendar-service listening on :${PORT}`));
+})().catch((e) => {
+  console.error('[Startup] failed to start', e);
+  process.exit(1);
+});

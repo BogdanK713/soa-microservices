@@ -1,0 +1,130 @@
+openapi: 3.0.3
+info:
+  title: CSV Report Service
+  version: "1.1.0"
+  description: >
+    Serverless CSV utilities:
+    - **/api/report**: Accept CSV and return aggregates.
+    - **/api/analytics-report**: Pull data from Analytics service and return CSV/JSON.
+
+servers:
+  - url: /
+
+paths:
+  /api/report:
+    post:
+      summary: Parse CSV (raw or JSON) and return aggregates
+      description: |
+        Accepts either:
+        - `text/plain` body with CSV
+        - `application/json` body `{ "csv": "..." }`
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              example: |
+                date,amount,location,service
+                2025-08-10,49.99,Center,Haircut
+                2025-08-10,19.99,Center,Beard
+          application/json:
+            schema:
+              type: object
+              properties:
+                csv:
+                  type: string
+      responses:
+        "200":
+          description: Aggregates computed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records: { type: integer, example: 3 }
+                  byDate:
+                    type: object
+                    additionalProperties: { type: integer }
+                    example: { "2025-08-10": 2, "2025-08-11": 1 }
+                  revenueByDate:
+                    type: object
+                    additionalProperties: { type: number }
+                    example: { "2025-08-10": 69.98, "2025-08-11": 29.0 }
+                  topLocations:
+                    type: array
+                    items:
+                      type: object
+                      properties: { key: { type: string }, count: { type: integer } }
+                  topServices:
+                    type: array
+                    items:
+                      type: object
+                      properties: { key: { type: string }, count: { type: integer } }
+        "400":
+          description: Invalid or missing CSV
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string }
+
+  /api/analytics-report:
+    get:
+      summary: Export Analytics data as CSV (or JSON)
+      description: >
+        Proxies your Analytics service and returns the chosen dataset as CSV or JSON.
+        Configure the target via the env var `ANALYTICS_BASE_URL` (e.g. `http://localhost:8000/analytics`).
+      parameters:
+        - in: query
+          name: source
+          required: true
+          schema:
+            type: string
+            enum: [reservations-per-month, revenue-by-service, reservations-by-location, top-users]
+          description: Which analytics endpoint to call.
+        - in: query
+          name: format
+          required: false
+          schema:
+            type: string
+            enum: [csv, json]
+            default: csv
+          description: Output format. CSV defaults with a downloadable filename.
+      responses:
+        "200":
+          description: CSV file or JSON payload
+          content:
+            text/csv:
+              schema: { type: string, example: "col1,col2\nv1,v2" }
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  source: { type: string, example: revenue-by-service }
+                  data:
+                    type: array
+                    items:
+                      type: object
+        "400":
+          description: Invalid params
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string }
+        "502":
+          description: Upstream analytics error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string }
+                  details: { type: string }

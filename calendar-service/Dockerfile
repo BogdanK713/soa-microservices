@@ -7,6 +7,7 @@ COPY package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 COPY src ./src
+COPY graphql ./src/graphql
 
 ENV NODE_ENV=production
 ENV PORT=8080

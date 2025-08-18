@@ -1,4 +1,4 @@
-# docker-compose.yml  (Compose v2 ne treba "version:")
+# docker-compose.yml
 
 networks:
   soa-net:
@@ -9,6 +9,7 @@ volumes:
   company-db-data:
   analytics_mysql_data:
   employee-storage:
+  minio-data:
 
 services:
   # ---------- USER (Node/Express) ----------
@@ -82,7 +83,7 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://employee_user:employeepass@employee-db:3306/employee_db
       STORAGE_PATH: /storage
-      COMPANY_SERVICE_URL: http://company-service:8082/api   # <-- 8082 i /api
+      COMPANY_SERVICE_URL: http://company-service:8082/api
       COMPANY_HTTP_CONNECT_TIMEOUT: "2.0"
       COMPANY_HTTP_READ_TIMEOUT: "2.0"
       COMPANY_VALIDATION_STRICT: "false"
@@ -101,7 +102,7 @@ services:
     networks: [soa-net]
     restart: unless-stopped
 
-  # ---------- COMPANY / RESERVATION (Spring Boot) ----------
+  # ---------- COMPANY DB ----------
   company-db:
     image: mysql:8.0
     container_name: company-db
@@ -119,8 +120,43 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 30
 
+  # ---------- MinIO (S3) ----------
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 endpoint
+      - "9001:9001"   # Web konzola
+    volumes:
+      - minio-data:/data
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [soa-net]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minio minio12345 &&
+      mc mb -p local/company || true &&
+      mc anonymous set public local/company || true &&
+      echo 'MinIO bucket ready';
+      "
+
+  # ---------- COMPANY (Spring Boot) ----------
   company-service:
     build:
       context: ./company-reservation-service/company-reservation-service
@@ -128,19 +164,40 @@ services:
     depends_on:
       company-db:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
     environment:
-      # Spring datasource (MySQL)
+      # DB
       SPRING_DATASOURCE_URL: jdbc:mysql://company-db:3306/company_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
       SPRING_DATASOURCE_USERNAME: company_user
       SPRING_DATASOURCE_PASSWORD: companypass
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
-      # (po potrebi) SPRING_SQL_INIT_MODE: always
-      # integracija na User service:
-      USER_SERVICE_URL: http://user-service:3000/api
-      # Ako app koristi server.port iz env, ovim ga forsiraš na 8082:
+      DB_URL: jdbc:mysql://company-db:3306/company_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+      DB_USERNAME: company_user
+      DB_PASSWORD: companypass
       SERVER_PORT: "8082"
+
+      # SMS GraphQL (to avoid placeholder crash)
+      SMS_FAAS_GRAPHQL_URL: http://sms-faas:8080/graphql
+      SMS_FAAS_API_KEY: dummy
+
+      # MinIO / S3
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minio
+      MINIO_ACCES_KEY: minio
+      MINIO_SECRET_KEY: minio12345
+      MINIO_SECRETE_KEY: minio12345
+      MINIO_PUBLIC_BUCKET: company
+      MINIO_PRIVATE_BUCKET: company-private
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio12345
+      AWS_REGION: us-east-1
+
+      # Other
+      USER_SERVICE_URL: http://user-service:3000/api
+      ADMIN_SERVICE_URL: http://admin-service:8080
     ports:
-      - "8082:8082"        # Tomcat u logu kaže 8082 -> mapiramo 8082:8082
+      - "8082:8082"
     networks: [soa-net]
     restart: unless-stopped
 
@@ -182,7 +239,8 @@ services:
       DB_PASSWORD: root
       DB_NAME: reservation_service_db
       EMPLOYEE_BASE_URL: http://employee-svc:8000
-      COMPANY_BASE_URL:  http://company-service:8082/api   # <-- natrag na 8082 + /api
+      COMPANY_BASE_URL:  http://company-service:8082/api
+      ANALYTICS_COMPANY_ID: "1"        # <--- ADDED: used by clients.py to hit the right company-scoped endpoints
     ports:
       - "8000:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000

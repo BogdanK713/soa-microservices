@@ -51,7 +51,7 @@ Thumbs.db
 FILE: docker-compose.yml
 ================================================================================
 
-# docker-compose.yml  (Compose v2 ne treba "version:")
+# docker-compose.yml
 
 networks:
   soa-net:
@@ -59,8 +59,10 @@ networks:
 volumes:
   user_db_data:
   employee-db-data:
+  company-db-data:
   analytics_mysql_data:
   employee-storage:
+  minio-data:
 
 services:
   # ---------- USER (Node/Express) ----------
@@ -72,7 +74,6 @@ services:
       MYSQL_DATABASE: user_service_db
       MYSQL_USER: user_svc
       MYSQL_PASSWORD: userpass
-    # host 3306 ti je već zauzet (vidim personal-finance-db-1), pa objavljujemo na 3309
     ports:
       - "3309:3306"
     volumes:
@@ -93,7 +94,7 @@ services:
       user-mysql:
         condition: service_healthy
     environment:
-      DB_HOST: user-mysql          # unutar mreže ostaje 3306
+      DB_HOST: user-mysql
       DB_PORT: "3306"
       DB_USER: user_svc
       DB_PASSWORD: userpass
@@ -154,14 +155,100 @@ services:
     networks: [soa-net]
     restart: unless-stopped
 
-  # ---------- COMPANY / RESERVATION (Spring Boot) ----------
+  # ---------- COMPANY DB ----------
+  company-db:
+    image: mysql:8.0
+    container_name: company-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: company_db
+      MYSQL_USER: company_user
+      MYSQL_PASSWORD: companypass
+    ports:
+      - "3310:3306"
+    volumes:
+      - company-db-data:/var/lib/mysql
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ---------- MinIO (S3) ----------
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 endpoint
+      - "9001:9001"   # Web konzola
+    volumes:
+      - minio-data:/data
+    networks: [soa-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [soa-net]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minio minio12345 &&
+      mc mb -p local/company || true &&
+      mc anonymous set public local/company || true &&
+      echo 'MinIO bucket ready';
+      "
+
+  # ---------- COMPANY (Spring Boot) ----------
   company-service:
     build:
       context: ./company-reservation-service/company-reservation-service
-      dockerfile: Dockerfile
     container_name: company-service
+    depends_on:
+      company-db:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
     environment:
+      # DB
+      SPRING_DATASOURCE_URL: jdbc:mysql://company-db:3306/company_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: company_user
+      SPRING_DATASOURCE_PASSWORD: companypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      DB_URL: jdbc:mysql://company-db:3306/company_db?createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+      DB_USERNAME: company_user
+      DB_PASSWORD: companypass
+      SERVER_PORT: "8082"
+
+      # SMS GraphQL (to avoid placeholder crash)
+      SMS_FAAS_GRAPHQL_URL: http://sms-faas:8080/graphql
+      SMS_FAAS_API_KEY: dummy
+
+      # MinIO / S3
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minio
+      MINIO_ACCES_KEY: minio
+      MINIO_SECRET_KEY: minio12345
+      MINIO_SECRETE_KEY: minio12345
+      MINIO_PUBLIC_BUCKET: company
+      MINIO_PRIVATE_BUCKET: company-private
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio12345
+      AWS_REGION: us-east-1
+
+      # Other
       USER_SERVICE_URL: http://user-service:3000/api
+      ADMIN_SERVICE_URL: http://admin-service:8080
     ports:
       - "8082:8082"
     networks: [soa-net]
@@ -205,7 +292,8 @@ services:
       DB_PASSWORD: root
       DB_NAME: reservation_service_db
       EMPLOYEE_BASE_URL: http://employee-svc:8000
-      COMPANY_BASE_URL:  http://company-service:8082
+      COMPANY_BASE_URL:  http://company-service:8082/api
+      ANALYTICS_COMPANY_ID: "1"        # <--- ADDED: used by clients.py to hit the right company-scoped endpoints
     ports:
       - "8000:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -347,30 +435,60 @@ FILE: analytics-service\app\clients.py
 # app/clients.py
 import os, requests
 
+# ----- Employee service -----
 EMPLOYEE_BASE = os.getenv("EMPLOYEE_BASE_URL", "http://employee-service:8000")
-EMPLOYEE_API_PREFIX = os.getenv("EMPLOYEE_API_PREFIX", "")  # npr. "/api" ili ""
+EMPLOYEE_API_PREFIX = os.getenv("EMPLOYEE_API_PREFIX", "")  # e.g. "/api" or ""
 
-COMPANY_BASE  = os.getenv("COMPANY_BASE_URL",  "http://company-reservation-service:8082")
-COMPANY_API_PREFIX = os.getenv("COMPANY_API_PREFIX", "")    # npr. "/api" ili ""
+# ----- Company/Reservation service (Vanja) -----
+# NOTE: in docker-compose you already set COMPANY_BASE_URL to "http://company-service:8082/api"
+COMPANY_BASE  = os.getenv("COMPANY_BASE_URL",  "http://company-service:8082/api")
+COMPANY_API_PREFIX = os.getenv("COMPANY_API_PREFIX", "")    # usually empty because BASE already has /api
+
+# Default company id for analytics aggregations
+DEFAULT_COMPANY_ID = int(os.getenv("ANALYTICS_COMPANY_ID", "1"))
+
 
 def _url(base, prefix, path):
-    # garantuj jedno / između segmenata
-    return f"{base.rstrip('/')}{prefix.rstrip('/')}{path}"
+    base = base.rstrip("/")
+    pfx = (prefix or "").strip()
+    if pfx and not pfx.startswith("/"):
+        pfx = "/" + pfx
+    return f"{base}{pfx}{path}"  # path MUST start with "/"
+
 
 def _get_json(url, params=None):
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
 
+
 # --- Employee service ---
 def list_employees():
-    # Ako FastAPI ima prefiks (npr. /api), postavi EMPLOYEE_API_PREFIX="/api"
+    # If FastAPI has a prefix (e.g. /api), set EMPLOYEE_API_PREFIX="/api"
     return _get_json(_url(EMPLOYEE_BASE, EMPLOYEE_API_PREFIX, "/employees"))
 
-# --- Company reservation service ---
-def list_reservations():
-    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/reservations"))
 
+# --- Company / Reservation service (Vanja) ---
+# IMPORTANT: Vanja's service does NOT have root GET /reservations or /services.
+# Use the company-scoped endpoints here and keep the rest of your code unchanged.
+
+def list_reservations_by_company(company_id: int):
+    # GET /api/reservations/company/{company_id}
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, f"/reservations/company/{company_id}"))
+
+def list_reservations():
+    # Keep your old call sites working by routing to company-scoped endpoint.
+    return list_reservations_by_company(DEFAULT_COMPANY_ID)
+
+def list_services_by_company(company_id: int):
+    # GET /api/services/company/{company_id}
+    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, f"/services/company/{company_id}"))
+
+def list_services():
+    # Keep your old call sites working by routing to company-scoped endpoint.
+    return list_services_by_company(DEFAULT_COMPANY_ID)
+
+# These stayed the same; they already point to valid resources in your app.
 def list_payments():
     return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/payments"))
 
@@ -379,9 +497,6 @@ def list_cancellations():
 
 def list_locations():
     return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/locations"))
-
-def list_services():
-    return _get_json(_url(COMPANY_BASE, COMPANY_API_PREFIX, "/services"))
 
 ================================================================================
 FILE: analytics-service\app\db.py
@@ -2410,6 +2525,7 @@ COPY package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 COPY src ./src
+COPY graphql ./src/graphql
 
 ENV NODE_ENV=production
 ENV PORT=8080
@@ -3884,7 +4000,10 @@ FILE: calendar-service\package.json
     "googleapis": "^105.0.0",
     "morgan": "^1.10.0",
     "swagger-ui-express": "^5.0.1",
-    "yamljs": "^0.3.0"
+    "yamljs": "^0.3.0",
+    "@apollo/server": "^4.10.0",
+    "body-parser": "^1.20.3",
+    "graphql": "^16.9.0"
   }
 }
 
@@ -3899,6 +4018,219 @@ FILE: calendar-service\req.json
   "end": "2025-08-12T10:30:00Z",
   "attendees": [{ "email": "example@example.com", "name": "Example" }]
 }
+================================================================================
+FILE: calendar-service\graphql\mount.js
+================================================================================
+
+// calendar-service/graphql/mount.js
+// Mount Apollo Server v4 on an existing Express app at /graphql
+
+const { ApolloServer } = require("@apollo/server");
+const { expressMiddleware } = require("@apollo/server/express4");
+const { ApolloServerPluginLandingPageLocalDefault } = require("@apollo/server/plugin/landingPage/default");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const { typeDefs, resolvers } = require("./schema");
+
+/**
+ * Mounts GraphQL middleware at the given path.
+ * IMPORTANT: call and await this before app.listen()
+ */
+async function mountGraphQL(app, path = "/graphql") {
+  const server = new ApolloServer({
+    typeDefs,
+    resolvers,
+    plugins: [ApolloServerPluginLandingPageLocalDefault()],
+  });
+
+  await server.start();
+
+  // CORS + JSON body parser only for /graphql
+  app.use(path, cors(), bodyParser.json(), expressMiddleware(server));
+
+  console.log(`[GraphQL] mounted at ${path}`);
+}
+
+module.exports = { mountGraphQL };
+
+================================================================================
+FILE: calendar-service\graphql\schema.js
+================================================================================
+
+// calendar-service/graphql/schema.js
+// GraphQL schema + resolvers for Google Calendar
+// Requires env: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY, CALENDAR_ID (default)
+
+const { GraphQLScalarType, Kind } = require("graphql");
+const { google } = require("googleapis");
+
+// ---- helpers: Google auth + Calendar client ----
+function getGoogleCalendar() {
+  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  let key = process.env.GOOGLE_PRIVATE_KEY || "";
+
+  if (!email || !key) {
+    throw new Error(
+      "Missing GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_PRIVATE_KEY env variables."
+    );
+  }
+  // keys often come with \n escaped in .env files
+  key = key.replace(/\\n/g, "\n");
+
+  const auth = new google.auth.JWT({
+    email,
+    key,
+    scopes: ["https://www.googleapis.com/auth/calendar.readonly"],
+  });
+
+  return google.calendar({ version: "v3", auth });
+}
+
+// ---- GraphQL scalar for ISO DateTime ----
+const DateTime = new GraphQLScalarType({
+  name: "DateTime",
+  description: "ISO-8601 date-time string",
+  serialize(value) {
+    // value sent to the client
+    return new Date(value).toISOString();
+  },
+  parseValue(value) {
+    // value from the client variables
+    // we keep it as a string and pass to Google API
+    return value;
+  },
+  parseLiteral(ast) {
+    if (ast.kind === Kind.STRING) return ast.value;
+    return null;
+  },
+});
+
+// ---- typeDefs ----
+const typeDefs = `#graphql
+  scalar DateTime
+
+  type Attendee {
+    email: String
+    displayName: String
+    responseStatus: String
+  }
+
+  type Event {
+    id: ID!
+    summary: String
+    description: String
+    location: String
+    htmlLink: String
+    start: DateTime
+    end: DateTime
+    attendees: [Attendee!]
+  }
+
+  type Calendar {
+    id: ID!
+    summary: String
+    description: String
+    timeZone: String
+  }
+
+  type Query {
+    # list calendars the service account can see
+    calendars: [Calendar!]!
+
+    # list events from a calendar; all args optional
+    events(
+      calendarId: ID
+      timeMin: DateTime
+      timeMax: DateTime
+      maxResults: Int
+    ): [Event!]!
+
+    # get single event by id
+    event(calendarId: ID, eventId: ID!): Event
+  }
+`;
+
+// ---- resolvers ----
+const resolvers = {
+  DateTime,
+
+  Query: {
+    async calendars() {
+      const calendar = getGoogleCalendar();
+      const res = await calendar.calendarList.list();
+      const items = res.data.items || [];
+      return items.map((c) => ({
+        id: c.id,
+        summary: c.summary || null,
+        description: c.description || null,
+        timeZone: c.timeZone || null,
+      }));
+    },
+
+    async events(_, args) {
+      const calendar = getGoogleCalendar();
+      const calendarId = args.calendarId || process.env.CALENDAR_ID;
+      if (!calendarId) {
+        throw new Error("calendarId is required (or set CALENDAR_ID env).");
+      }
+
+      const now = new Date();
+      const in30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+      const res = await calendar.events.list({
+        calendarId,
+        timeMin: args.timeMin || now.toISOString(),
+        timeMax: args.timeMax || in30.toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: args.maxResults || 50,
+      });
+
+      const items = res.data.items || [];
+      return items.map((e) => ({
+        id: e.id,
+        summary: e.summary || null,
+        description: e.description || null,
+        location: e.location || null,
+        htmlLink: e.htmlLink || null,
+        start: (e.start && (e.start.dateTime || e.start.date)) || null,
+        end: (e.end && (e.end.dateTime || e.end.date)) || null,
+        attendees: (e.attendees || []).map((a) => ({
+          email: a.email || null,
+          displayName: a.displayName || null,
+          responseStatus: a.responseStatus || null,
+        })),
+      }));
+    },
+
+    async event(_, { calendarId, eventId }) {
+      const calendar = getGoogleCalendar();
+      const cid = calendarId || process.env.CALENDAR_ID;
+      if (!cid) throw new Error("calendarId is required (or set CALENDAR_ID).");
+      if (!eventId) throw new Error("eventId is required.");
+
+      const res = await calendar.events.get({ calendarId: cid, eventId });
+      const e = res.data;
+      return {
+        id: e.id,
+        summary: e.summary || null,
+        description: e.description || null,
+        location: e.location || null,
+        htmlLink: e.htmlLink || null,
+        start: (e.start && (e.start.dateTime || e.start.date)) || null,
+        end: (e.end && (e.end.dateTime || e.end.date)) || null,
+        attendees: (e.attendees || []).map((a) => ({
+          email: a.email || null,
+          displayName: a.displayName || null,
+          responseStatus: a.responseStatus || null,
+        })),
+      };
+    },
+  },
+};
+
+module.exports = { typeDefs, resolvers };
+
 ================================================================================
 FILE: calendar-service\src\google.js
 ================================================================================
@@ -4021,34 +4353,44 @@ module.exports = { listEvents, createEvent, deleteEvent };
 FILE: calendar-service\src\index.js
 ================================================================================
 
+// calendar-service/src/index.js
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
-const { listEvents, createEvent, deleteEvent } = require('./google');
 const path = require('path');
 const swaggerUi = require('swagger-ui-express');
 const YAML = require('yamljs');
 
+const { listEvents, createEvent, deleteEvent } = require('./google');
+const { mountGraphQL } = require('./graphql/mount');
+
 const app = express();
 
-// CORS + log
+// CORS + logs
 app.use(cors());
 app.use(morgan('tiny'));
 
-// --- Swagger UI & OpenAPI ---
+// ---- Swagger UI & OpenAPI ----
 const openapi = YAML.load(path.join(__dirname, 'docs', 'openapi.yaml'));
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapi));
 app.get('/openapi.yaml', (_req, res) => {
+  // yamljs stringify
   res.type('text/yaml').send(YAML.stringify(openapi, 10, 2));
 });
 app.get('/openapi.json', (_req, res) => res.json(openapi));
 
-// Uvijek popuni req.rawBody, a req.body ako je validan JSON.
+// ---- JSON body for REST (safe, standard) ----
+app.use(express.json({ limit: '1mb' }));
+
+// ---- Optional: your previous raw-body helper, but SKIP /graphql completely ----
 app.use((req, res, next) => {
+  // Let Apollo fully control /graphql requests (GET and POST)
+  if ((req.path || '').startsWith('/graphql')) return next();
+
+  // For other routes, retain your tolerant behavior
   let data = '';
   req.setEncoding('utf8');
 
-  // samo za metode koje mogu imati tijelo
   const method = (req.method || 'GET').toUpperCase();
   const mayHaveBody = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
   if (!mayHaveBody) return next();
@@ -4056,31 +4398,28 @@ app.use((req, res, next) => {
   req.on('data', chunk => { data += chunk; });
   req.on('end', () => {
     req.rawBody = data;
-    req.body = undefined;           // namjerno undefined dok ne odlučimo
-
+    // If content-type says JSON but body is invalid, leave req.body undefined;
+    // downstream handlers can check req.jsonParseError and fall back to rawBody if needed.
     const ctype = (req.headers['content-type'] || '').toLowerCase();
     if (ctype.includes('application/json')) {
       if (data && data.trim()) {
         try {
           req.body = JSON.parse(data);
         } catch {
-          // NE vraćamo 400 ovdje – rute će same validirati ili fallbackati na rawBody
           req.body = undefined;
           req.jsonParseError = true;
         }
       } else {
-        req.body = {}; // prazan JSON body je ok
+        req.body = {};
       }
     }
-    // ako je text/plain ili nešto treće – ostavi body = undefined, rawBody je dostupan
     return next();
   });
 
   req.on('error', (err) => {
-    // čak i u slučaju greške, nastavi – rute će znati reći korisniku šta fali
     req.rawBody = req.rawBody || '';
     req.body = req.body || undefined;
-    req.bodyReadError = String(err && err.message || err);
+    req.bodyReadError = String((err && err.message) || err);
     return next();
   });
 });
@@ -4089,7 +4428,7 @@ app.use((req, res, next) => {
 app.get('/', (_req, res) => res.json({ ok: true, service: 'calendar-service' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Diag: vidi šta je stvarno stiglo
+// Diagnostics: echo back what was received
 app.post('/echo', (req, res) => {
   res.json({
     ok: true,
@@ -4102,7 +4441,9 @@ app.post('/echo', (req, res) => {
   });
 });
 
-// GET /events – lista
+// ----- REST: Events -----
+
+// GET /events – list
 app.get('/events', async (req, res) => {
   try {
     const items = await listEvents({
@@ -4117,12 +4458,12 @@ app.get('/events', async (req, res) => {
   }
 });
 
-// POST /events – kreiraj
+// POST /events – create
 app.post('/events', async (req, res) => {
   try {
     let payload = req.body;
 
-    // fallback: ako Content-Type nije JSON ili je parse pao, probaj rawBody kao JSON
+    // Fallback: if not parsed as JSON, try rawBody
     if (!payload || typeof payload !== 'object') {
       if (req.rawBody && req.rawBody.trim().startsWith('{')) {
         try {
@@ -4142,7 +4483,7 @@ app.post('/events', async (req, res) => {
   }
 });
 
-// DELETE /events/:id – obriši
+// DELETE /events/:id – delete
 app.delete('/events/:id', async (req, res) => {
   try {
     const data = await deleteEvent(req.params.id);
@@ -4152,11 +4493,19 @@ app.delete('/events/:id', async (req, res) => {
   }
 });
 
-// Uniform 404 JSON
-app.use((req, res) => res.status(404).json({ ok: false, error: 'Not Found' }));
+// ---- Bootstrap: mount GraphQL first, then listen ----
+(async () => {
+  await mountGraphQL(app, '/graphql'); // <- await ensures the route exists before first requests
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`calendar-service listening on :${PORT}`));
+  // Uniform 404 JSON (keep last)
+  app.use((req, res) => res.status(404).json({ ok: false, error: 'Not Found' }));
+
+  const PORT = process.env.PORT || 8080;
+  app.listen(PORT, () => console.log(`calendar-service listening on :${PORT}`));
+})().catch((e) => {
+  console.error('[Startup] failed to start', e);
+  process.exit(1);
+});
 
 ================================================================================
 FILE: calendar-service\src\docs\openapi.yaml
@@ -10536,3 +10885,118 @@ module.exports = async function handler(req, res) {
 FILE: vercel-csv-report\public\openapi.yaml
 ================================================================================
 
+openapi: 3.0.3
+info:
+  title: Vercel CSV Report API
+  version: 1.0.0
+  description: |
+    Serverless endpoint koji prima CSV i vraća sažetke (broj zapisa, sumarni pregled po datumu,
+    top lokacije i top usluge). Tijelo može biti **raw text/plain (CSV)** ili **application/json** oblika
+    `{ "csv": "..." }`.
+
+servers:
+  - url: https://vercel-csv-report.vercel.app
+    description: Vercel (prod)
+  - url: http://localhost:3000
+    description: Lokalno (vercel dev)
+
+tags:
+  - name: report
+    description: Generisanje izvještaja iz CSV-a
+
+paths:
+  /api/report:
+    post:
+      tags: [report]
+      summary: Generiši izvještaj iz CSV-a
+      description: |
+        Pošalji CSV kao **text/plain** (raw body) ili kao **application/json** sa poljem `csv`.
+        CSV očekuje header-e npr. `date,amount,location,service` i ISO datume (YYYY-MM-DD).
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              description: Raw CSV sadržaj
+            examples:
+              rawCsv:
+                summary: Primjer raw CSV
+                value: |
+                  date,amount,location,service
+                  2025-08-10,49.99,Center,Haircut
+                  2025-08-10,19.99,Center,Beard
+                  2025-08-11,29.00,West,Haircut
+          application/json:
+            schema:
+              type: object
+              properties:
+                csv:
+                  type: string
+                  description: CSV sadržaj kao string
+              required: [csv]
+            examples:
+              jsonCsv:
+                value:
+                  csv: |-
+                    date,amount,location,service
+                    2025-08-10,49.99,Center,Haircut
+                    2025-08-10,19.99,Center,Beard
+                    2025-08-11,29.00,West,Haircut
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records: { type: integer, description: Broj podataka (bez header-a) }
+                  byDate:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    description: Količina zapisa po datumu (YYYY-MM-DD → count)
+                  revenueByDate:
+                    type: object
+                    additionalProperties:
+                      type: number
+                      format: float
+                    description: Zbroj `amount` po datumu (YYYY-MM-DD → suma)
+                  topLocations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string, description: Naziv lokacije }
+                        count: { type: integer }
+                  topServices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string, description: Naziv usluge }
+                        count: { type: integer }
+              examples:
+                sample:
+                  value:
+                    records: 3
+                    byDate: { "2025-08-10": 2, "2025-08-11": 1 }
+                    revenueByDate: { "2025-08-10": 69.98, "2025-08-11": 29 }
+                    topLocations:
+                      - { key: "Center", count: 2 }
+                      - { key: "West", count: 1 }
+                    topServices:
+                      - { key: "Haircut", count: 2 }
+                      - { key: "Beard", count: 1 }
+        '400':
+          description: Bad Request (npr. CSV nije poslan)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+              examples:
+                missing:
+                  value: { error: 'Provide CSV as raw text/plain body or JSON { csv: "..." }' }
